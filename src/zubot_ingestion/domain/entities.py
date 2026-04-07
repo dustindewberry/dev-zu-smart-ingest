@@ -168,6 +168,8 @@ class ExtractionResult:
     sources_used: list[str] = field(default_factory=list)
     raw_vision_response: str | None = None
     raw_text_response: str | None = None
+    confidence_score: float | None = None
+    confidence_tier: ConfidenceTier | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -269,6 +271,8 @@ class PipelineResult:
     sidecar: SidecarDocument
     confidence_assessment: ConfidenceAssessment
     errors: list[PipelineError] = field(default_factory=list)
+    pipeline_trace: dict[str, Any] = field(default_factory=dict)
+    otel_trace_id: str | None = None
 
 
 __all__ = [
