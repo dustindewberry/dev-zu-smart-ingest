@@ -136,11 +136,12 @@ class JobORM(Base):
     )
     filename: Mapped[str] = mapped_column(String(512), nullable=False)
     file_hash: Mapped[str] = mapped_column(String(64), nullable=False)
-    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_size: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     status: Mapped[str] = mapped_column(
         String(32), nullable=False, default="queued"
     )
-    mode: Mapped[str] = mapped_column(String(32), nullable=False)
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     result: Mapped[dict[str, Any] | None] = mapped_column(JSONBType(), nullable=True)
     confidence_tier: Mapped[str | None] = mapped_column(String(16), nullable=True)
     confidence_score: Mapped[float | None] = mapped_column(
