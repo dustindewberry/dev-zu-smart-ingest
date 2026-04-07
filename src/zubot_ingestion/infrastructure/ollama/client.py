@@ -22,6 +22,18 @@ The default ``temperature`` is ``OLLAMA_TEMPERATURE_DETERMINISTIC`` (0.0)
 so the extraction pipeline produces reproducible output. Callers that
 need non-deterministic sampling must pass an explicit value.
 
+Instrumentation (CAP-028)
+-------------------------
+Each ``_post_generate`` call is wrapped in :func:`time_ollama_call` so
+the wall-clock duration lands in the ``ollama_duration{model=...}``
+histogram for both the success and failure paths. Inside the retry
+loop, every retried 503/429/transport-error attempt records a
+``status='retry'`` increment via :func:`record_ollama_request_status`,
+the final 200 records ``status='success'``, and any non-retryable
+HTTP error / exhausted retry budget records ``status='error'``. The
+status taxonomy constants are exposed as ``STATUS_SUCCESS``,
+``STATUS_ERROR``, and ``STATUS_RETRY``.
+
 Implements CAP-008. Protocol contract: IOllamaClient (§4.16 of
 boundary-contracts.md).
 """
@@ -30,12 +42,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Any
+import time
+from contextlib import contextmanager
+from typing import Any, Iterator
 
 import httpx
 
 from zubot_ingestion.domain.entities import OllamaResponse
 from zubot_ingestion.domain.protocols import IOllamaClient
+from zubot_ingestion.infrastructure.metrics.prometheus import (
+    ollama_duration,
+    ollama_requests,
+)
 from zubot_ingestion.shared.constants import (
     OLLAMA_MODEL_TEXT,
     OLLAMA_MODEL_VISION,
@@ -43,6 +61,53 @@ from zubot_ingestion.shared.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# CAP-028 instrumentation helpers
+# ---------------------------------------------------------------------------
+
+# Status label values pinned as module-level constants so the canonical
+# Ollama client and the unit tests share a single source of truth.
+STATUS_SUCCESS: str = "success"
+STATUS_ERROR: str = "error"
+STATUS_RETRY: str = "retry"
+
+
+def record_ollama_request_status(model: str, status: str) -> None:
+    """Increment ``ollama_requests{model=..., status=...}`` exactly once.
+
+    Args:
+        model: The Ollama model identifier (e.g. ``'qwen2.5vl:7b'``).
+        status: One of {'success', 'error', 'retry'}. The helper does
+            not enforce the taxonomy at runtime — callers are
+            responsible for using the canonical labels — but the
+            module-level ``STATUS_*`` constants exist as the single
+            source of truth.
+    """
+    ollama_requests.labels(model=model, status=status).inc()
+
+
+@contextmanager
+def time_ollama_call(model: str) -> Iterator[None]:
+    """Time-and-observe an Ollama HTTP call into ``ollama_duration{model=...}``.
+
+    The context manager captures the start time before yielding and
+    observes the elapsed seconds after the body completes — even if
+    the body raises. This guarantees that timing is recorded for both
+    success and failure paths.
+
+    Example::
+
+        with time_ollama_call(model='qwen2.5vl:7b'):
+            response = httpx.post(url, json=payload)
+    """
+    start = time.perf_counter()
+    try:
+        yield
+    finally:
+        elapsed = max(0.0, time.perf_counter() - start)
+        ollama_duration.labels(model=model).observe(elapsed)
 
 
 # ---------------------------------------------------------------------------
@@ -273,66 +338,81 @@ class OllamaClient(IOllamaClient):
         Transport errors (timeouts, connection resets) are also
         retried with the same backoff schedule. Any other non-2xx
         status code short-circuits with an immediate ``OllamaError``.
+
+        CAP-028: the entire body is wrapped in :func:`time_ollama_call`
+        so the request duration is recorded for both the success and
+        failure paths. Each retried attempt increments the
+        ``status='retry'`` counter, the final 200 increments
+        ``status='success'``, and any error path (non-retryable HTTP
+        status, exhausted retries) increments ``status='error'``.
         """
         url = f"{self._base_url}/api/generate"
         last_error: BaseException | None = None
         last_status: int | None = None
 
-        for attempt in range(_MAX_ATTEMPTS):
-            try:
-                async with self._client(timeout=float(timeout_seconds)) as client:
-                    response = await client.post(url, json=payload)
-            except httpx.HTTPError as exc:
-                last_error = exc
-                last_status = None
-                logger.warning(
-                    "ollama.generate transport failure (attempt %d/%d): %s",
-                    attempt + 1,
-                    _MAX_ATTEMPTS,
-                    exc,
+        with time_ollama_call(model=model):
+            for attempt in range(_MAX_ATTEMPTS):
+                try:
+                    async with self._client(
+                        timeout=float(timeout_seconds)
+                    ) as client:
+                        response = await client.post(url, json=payload)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    last_status = None
+                    logger.warning(
+                        "ollama.generate transport failure (attempt %d/%d): %s",
+                        attempt + 1,
+                        _MAX_ATTEMPTS,
+                        exc,
+                    )
+                    if attempt + 1 < _MAX_ATTEMPTS:
+                        record_ollama_request_status(model, STATUS_RETRY)
+                        await asyncio.sleep(_sleep_for_attempt(attempt))
+                        continue
+                    break
+
+                status = response.status_code
+                if status == 200:
+                    record_ollama_request_status(model, STATUS_SUCCESS)
+                    return self._parse_response(response, model=model)
+
+                if status in _RETRYABLE_STATUS_CODES:
+                    last_error = None
+                    last_status = status
+                    logger.warning(
+                        "ollama.generate retryable status %d (attempt %d/%d)",
+                        status,
+                        attempt + 1,
+                        _MAX_ATTEMPTS,
+                    )
+                    if attempt + 1 < _MAX_ATTEMPTS:
+                        record_ollama_request_status(model, STATUS_RETRY)
+                        await asyncio.sleep(_sleep_for_attempt(attempt))
+                        continue
+                    break
+
+                # Non-retryable HTTP error — abort immediately.
+                record_ollama_request_status(model, STATUS_ERROR)
+                raise OllamaError(
+                    f"Ollama /api/generate returned HTTP {status}",
+                    status_code=status,
                 )
-                if attempt + 1 < _MAX_ATTEMPTS:
-                    await asyncio.sleep(_sleep_for_attempt(attempt))
-                    continue
-                break
 
-            status = response.status_code
-            if status == 200:
-                return self._parse_response(response, model=model)
-
-            if status in _RETRYABLE_STATUS_CODES:
-                last_error = None
-                last_status = status
-                logger.warning(
-                    "ollama.generate retryable status %d (attempt %d/%d)",
-                    status,
-                    attempt + 1,
-                    _MAX_ATTEMPTS,
+            # All attempts exhausted.
+            record_ollama_request_status(model, STATUS_ERROR)
+            if last_status is not None:
+                raise OllamaError(
+                    f"Ollama /api/generate exhausted {_MAX_ATTEMPTS} retries "
+                    f"(last status {last_status})",
+                    status_code=last_status,
                 )
-                if attempt + 1 < _MAX_ATTEMPTS:
-                    await asyncio.sleep(_sleep_for_attempt(attempt))
-                    continue
-                break
-
-            # Non-retryable HTTP error — abort immediately.
-            raise OllamaError(
-                f"Ollama /api/generate returned HTTP {status}",
-                status_code=status,
-            )
-
-        # All attempts exhausted.
-        if last_status is not None:
             raise OllamaError(
                 f"Ollama /api/generate exhausted {_MAX_ATTEMPTS} retries "
-                f"(last status {last_status})",
-                status_code=last_status,
+                f"(transport error)",
+                status_code=None,
+                cause=last_error,
             )
-        raise OllamaError(
-            f"Ollama /api/generate exhausted {_MAX_ATTEMPTS} retries "
-            f"(transport error)",
-            status_code=None,
-            cause=last_error,
-        )
 
     @staticmethod
     def _parse_response(
@@ -400,4 +480,12 @@ def _coerce_optional_int(value: Any) -> int | None:
     return None
 
 
-__all__ = ["OllamaClient", "OllamaError"]
+__all__ = [
+    "OllamaClient",
+    "OllamaError",
+    "record_ollama_request_status",
+    "time_ollama_call",
+    "STATUS_SUCCESS",
+    "STATUS_ERROR",
+    "STATUS_RETRY",
+]

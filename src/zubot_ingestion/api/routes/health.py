@@ -34,6 +34,13 @@ The HTTP status code is **200** for ``healthy`` and ``degraded``,
 This endpoint is exempt from authentication via ``AUTH_EXEMPT_PATHS``
 in ``zubot_ingestion.shared.constants`` so monitoring systems can poll
 it without credentials.
+
+CAP-028 integration: every health response refreshes the
+``zubot_queue_depth`` Prometheus gauge from the Celery inspect probe
+result via :func:`update_queue_depth_gauge`. Updating the gauge from
+the health endpoint piggybacks on the Celery RPC the probe already
+issues — no additional broker traffic is required, and Prometheus
+scrapes (~15 s) provide the right cadence to keep the gauge fresh.
 """
 
 from __future__ import annotations
@@ -45,6 +52,7 @@ from typing import Any, Awaitable, Callable
 from fastapi import APIRouter, Response, status
 
 from zubot_ingestion.config import get_settings
+from zubot_ingestion.infrastructure.metrics.prometheus import queue_depth
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 router = APIRouter()
@@ -57,6 +65,19 @@ DEPENDENCY_CHECK_TIMEOUT_SECONDS: float = 5.0
 # overall status to ``unhealthy``. Everything not in this set is
 # treated as optional and only downgrades the status to ``degraded``.
 CRITICAL_DEPENDENCIES: frozenset[str] = frozenset({"postgres", "redis"})
+
+
+def update_queue_depth_gauge(current_celery_queue_depth: int) -> None:
+    """Set the ``zubot_queue_depth`` gauge to the current Celery queue depth.
+
+    Args:
+        current_celery_queue_depth: The total number of tasks currently
+            being processed or waiting in any worker's local queue,
+            as reported by ``celery_app.control.inspect().active()`` +
+            ``.reserved()``. Must be a non-negative integer; negative
+            values are clamped to zero.
+    """
+    queue_depth.set(max(0, int(current_celery_queue_depth)))
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -312,6 +333,11 @@ async def health_check(response: Response) -> dict[str, Any]:
     }
     overall = _aggregate_status(dependencies)
 
+    # CAP-028: refresh the Prometheus queue_depth gauge from the value
+    # we just computed via the Celery inspect probe. The helper clamps
+    # negative values and coerces to int.
+    update_queue_depth_gauge(workers.get("queue_depth", 0))
+
     response.status_code = (
         status.HTTP_200_OK
         if overall in ("healthy", "degraded")
@@ -330,6 +356,7 @@ async def health_check(response: Response) -> dict[str, Any]:
 __all__ = [
     "router",
     "health_check",
+    "update_queue_depth_gauge",
     "DEPENDENCY_CHECK_TIMEOUT_SECONDS",
     "CRITICAL_DEPENDENCIES",
 ]

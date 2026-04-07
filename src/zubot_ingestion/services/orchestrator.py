@@ -1,4 +1,4 @@
-"""Extraction orchestrator — implements IOrchestrator (CAP-020 + CAP-027).
+"""Extraction orchestrator — implements IOrchestrator (CAP-020 + CAP-027 + CAP-028).
 
 The :class:`ExtractionOrchestrator` is the application-layer coordinator
 that drives a single :class:`Job` through the three-stage extraction
@@ -42,13 +42,26 @@ OpenTelemetry tracing (CAP-027):
   so the Celery task can persist it to ``job.otel_trace_id`` via
   ``IJobRepository.update_job_result``.
 
+Prometheus instrumentation (CAP-028):
+
+* :func:`record_extraction_duration` observes the total wall-clock of
+  every pipeline run into ``zubot_extraction_duration_seconds``.
+* :func:`record_field_confidences` observes one ``confidence_score{field=...}``
+  sample per populated Stage 1 field.
+* :func:`record_extraction_status` increments
+  ``zubot_extraction_total{status=...}`` exactly once per run, mapping
+  unrecoverable errors to ``'failed'``, REVIEW tier to ``'review'``,
+  and everything else to ``'completed'``.
+
 Layering: this module lives in the application (services) layer. It
 imports from :mod:`zubot_ingestion.shared`, :mod:`zubot_ingestion.domain`,
 and :mod:`zubot_ingestion.infrastructure.otel`. The OTEL infrastructure
 import is the ONE permitted exception to the "services may not import from
 infrastructure" rule because tracing is genuinely cross-cutting and the
 import-linter contract carves out
-``zubot_ingestion.infrastructure.otel`` accordingly.
+``zubot_ingestion.infrastructure.otel`` accordingly. The
+``infrastructure.metrics.prometheus`` import is also a carved-out
+exception for the same cross-cutting reason.
 """
 
 from __future__ import annotations
@@ -57,7 +70,7 @@ import asyncio
 import logging
 import time
 from dataclasses import replace
-from typing import Any
+from typing import Any, Iterable
 
 from opentelemetry.trace import Status, StatusCode
 
@@ -81,6 +94,11 @@ from zubot_ingestion.domain.protocols import (
     IPDFProcessor,
     ISidecarBuilder,
 )
+from zubot_ingestion.infrastructure.metrics.prometheus import (
+    confidence_score,
+    extraction_duration,
+    extraction_total,
+)
 from zubot_ingestion.infrastructure.otel.instrumentation import get_tracer
 from zubot_ingestion.shared.constants import (
     OTEL_SPAN_BATCH,
@@ -94,12 +112,128 @@ from zubot_ingestion.shared.constants import (
 )
 from zubot_ingestion.shared.types import PipelineError
 
-__all__ = ["ExtractionOrchestrator"]
+__all__ = [
+    "ExtractionOrchestrator",
+    "record_extraction_duration",
+    "record_field_confidences",
+    "record_extraction_status",
+    "STATUS_COMPLETED",
+    "STATUS_FAILED",
+    "STATUS_REVIEW",
+    "FIELD_DRAWING_NUMBER",
+    "FIELD_TITLE",
+    "FIELD_DOCUMENT_TYPE",
+]
 
 _LOG = logging.getLogger(__name__)
 
 # Sentinel used to format OTEL trace_ids as 32-char lowercase hex strings.
 _TRACE_ID_HEX_FORMAT = "032x"
+
+
+# ---------------------------------------------------------------------------
+# CAP-028 instrumentation helpers
+#
+# These pure functions update the metric singletons in
+# ``zubot_ingestion.infrastructure.metrics.prometheus``. They have no
+# runtime dependency on the orchestrator's internals beyond the public
+# ``ExtractionResult`` and ``ConfidenceTier`` types from the domain
+# layer, which means they can be unit-tested in isolation.
+# ---------------------------------------------------------------------------
+
+# Status label values pinned as module-level constants so the
+# orchestrator and the unit tests share a single source of truth for
+# the spelling.
+STATUS_COMPLETED: str = "completed"
+STATUS_FAILED: str = "failed"
+STATUS_REVIEW: str = "review"
+
+# Per-field labels for the confidence_score histogram. These three
+# labels MUST match the literal strings used by the Stage 1 extractors.
+FIELD_DRAWING_NUMBER: str = "drawing_number"
+FIELD_TITLE: str = "title"
+FIELD_DOCUMENT_TYPE: str = "document_type"
+
+
+def record_extraction_duration(start_perf_counter: float) -> None:
+    """Observe the elapsed wall-clock since ``start_perf_counter`` (seconds).
+
+    Args:
+        start_perf_counter: The value returned by ``time.perf_counter()``
+            at the start of the pipeline.
+    """
+    elapsed_seconds = max(0.0, time.perf_counter() - start_perf_counter)
+    extraction_duration.observe(elapsed_seconds)
+
+
+def record_field_confidences(extraction_result: Any) -> None:
+    """Observe one ``confidence_score{field=...}`` sample per populated field.
+
+    Reads ``drawing_number_confidence``, ``title_confidence``, and
+    ``document_type_confidence`` off the ``extraction_result``. Any
+    attribute that is missing or ``None`` is skipped — this matches the
+    "best-effort, never raise" contract that the orchestrator already
+    follows for partial Stage 1 failures.
+
+    Args:
+        extraction_result: A merged Stage 1 ExtractionResult dataclass.
+    """
+    pairs: tuple[tuple[str, str], ...] = (
+        (FIELD_DRAWING_NUMBER, "drawing_number_confidence"),
+        (FIELD_TITLE, "title_confidence"),
+        (FIELD_DOCUMENT_TYPE, "document_type_confidence"),
+    )
+    for field_label, attr in pairs:
+        value = getattr(extraction_result, attr, None)
+        if value is None:
+            continue
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            continue
+        confidence_score.labels(field=field_label).observe(numeric_value)
+
+
+def record_extraction_status(
+    tier: Any | None,
+    errors: Iterable[Any] | None = None,
+) -> str:
+    """Increment ``extraction_total{status=...}`` exactly once per pipeline run.
+
+    Args:
+        tier: A ``ConfidenceTier`` enum value (or None when the pipeline
+            failed before confidence calculation could complete).
+        errors: The ``errors`` list that the orchestrator accumulates
+            for unrecoverable stage failures. If non-empty AND any of
+            the contained errors has ``recoverable=False``, the status
+            is forced to 'failed' regardless of the tier value.
+
+    Returns:
+        The status label that was actually recorded
+        ({'completed', 'failed', 'review'}). Returning the label makes
+        the function easy to assert against in unit tests.
+    """
+    has_unrecoverable_error = False
+    if errors is not None:
+        for err in errors:
+            if not getattr(err, "recoverable", True):
+                has_unrecoverable_error = True
+                break
+
+    if has_unrecoverable_error or tier is None:
+        status = STATUS_FAILED
+    else:
+        # Compare against the enum's .value (a lowercase string) so this
+        # function does not need to import the ConfidenceTier enum
+        # directly.
+        tier_value = getattr(tier, "value", tier)
+        if isinstance(tier_value, str) and tier_value.lower() == STATUS_REVIEW:
+            status = STATUS_REVIEW
+        else:
+            status = STATUS_COMPLETED
+
+    extraction_total.labels(status=status).inc()
+    return status
 
 
 def _empty_extraction_result() -> ExtractionResult:
@@ -175,7 +309,7 @@ def _merge_extraction_results(
 
 
 class ExtractionOrchestrator(IOrchestrator):
-    """Application-layer pipeline orchestrator (CAP-020 + CAP-027)."""
+    """Application-layer pipeline orchestrator (CAP-020 + CAP-027 + CAP-028)."""
 
     def __init__(
         self,
@@ -233,6 +367,10 @@ class ExtractionOrchestrator(IOrchestrator):
             if Stage 3 failed), the confidence assessment, the per-stage
             timing trace, and the OTEL trace id of the job span.
         """
+        # CAP-028: capture the wall-clock start before any work begins so
+        # the extraction_duration histogram observes the full pipeline.
+        _pipeline_start = time.perf_counter()
+
         pipeline_trace: dict[str, Any] = {"stages": {}, "errors": []}
         errors: list[PipelineError] = []
         otel_trace_id: str | None = None
@@ -412,6 +550,11 @@ class ExtractionOrchestrator(IOrchestrator):
                         )
                     )
                     extraction_result = _empty_extraction_result()
+
+                # CAP-028: observe one confidence_score{field=...} sample
+                # per populated Stage 1 field as soon as the merged result
+                # is available.
+                record_field_confidences(extraction_result)
 
                 # ----------------------------------------------------------
                 # Stage 2 — companion document generation (CAP-017)
@@ -693,6 +836,11 @@ class ExtractionOrchestrator(IOrchestrator):
                         "skipped": True,
                         "reason": "review_tier_routes_to_review_queue",
                     }
+
+        # CAP-028: observe the total wall-clock and increment the
+        # extraction_total counter exactly once per run.
+        record_extraction_duration(_pipeline_start)
+        record_extraction_status(assessment.tier, errors)
 
         return PipelineResult(
             extraction_result=extraction_result,

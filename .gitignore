@@ -13,6 +13,7 @@ dist/
 # pytest
 .pytest_cache/
 .coverage
+.coverage.*
 htmlcov/
 
 # mypy
@@ -26,6 +27,7 @@ htmlcov/
 .venv/
 venv/
 env/
+ENV/
 
 # Environment files
 .env
@@ -35,3 +37,6 @@ env/
 .idea/
 .vscode/
 *.swp
+
+# macOS
+.DS_Store

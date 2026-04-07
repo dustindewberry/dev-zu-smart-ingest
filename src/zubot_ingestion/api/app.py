@@ -30,6 +30,7 @@ from zubot_ingestion.api.routes import batches as batches_routes
 from zubot_ingestion.api.routes import extract as extract_routes
 from zubot_ingestion.api.routes import health as health_routes
 from zubot_ingestion.api.routes import jobs as jobs_routes
+from zubot_ingestion.api.routes import metrics as metrics_routes
 from zubot_ingestion.config import get_settings
 from zubot_ingestion.infrastructure.otel.instrumentation import setup_otel
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
@@ -138,11 +139,13 @@ def create_app() -> FastAPI:
     # - CAP-010 (GET /batches/{batch_id})
     # - CAP-011 (GET /jobs/{job_id})
     # - CAP-003 (GET /health) — step-13 (keen-hare)
-    # Future steps mount additional routers (review, metrics) here.
+    # - CAP-028 (GET /metrics) — step-23 (witty-atlas)
+    # Future steps mount additional routers (review) here.
     app.include_router(extract_routes.router)
     app.include_router(batches_routes.router)
     app.include_router(jobs_routes.router)
     app.include_router(health_routes.router)
+    app.include_router(metrics_routes.router)
 
     return app
 
