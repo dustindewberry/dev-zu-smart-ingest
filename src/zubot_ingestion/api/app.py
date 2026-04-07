@@ -1,18 +1,16 @@
 """FastAPI application factory.
 
-Implements CAP-001 (web application skeleton). This module deliberately
-contains *only* the wiring needed to construct a runnable ``FastAPI``
-instance:
+Implements CAP-001 (web application skeleton) and wires together the
+middleware and routers produced by sibling steps:
 
 * CORS middleware (open in development; locked down later via config)
+* Authentication middleware (CAP-026; enforces API key / WOD JWT)
 * A lifespan context manager that logs startup / shutdown
 * Placeholder global exception handlers (concrete custom exception classes
   will be registered here as later steps add domain-specific errors)
 * OpenAPI metadata sourced from ``zubot_ingestion.shared.constants``
-
-No routes are registered here. Each later step (health, extract, batches,
-jobs, review, metrics) is responsible for mounting its own ``APIRouter``
-on the instance returned by :func:`create_app`.
+* Routers mounted from each step's router module (extract, health,
+  batches, jobs, review, metrics)
 """
 
 from __future__ import annotations
@@ -27,6 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import AuthMiddleware
+from zubot_ingestion.api.routes import extract as extract_routes
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type-checkers
@@ -122,8 +121,9 @@ def create_app() -> FastAPI:
     # registered alongside the routes that raise them in later steps.
     app.add_exception_handler(Exception, _unhandled_exception_handler)
 
-    # NOTE: No routes are registered here. Routers are mounted by later
-    # steps (health, extract, batches, jobs, review, metrics).
+    # Routers — CAP-009 (POST /extract). Future steps mount additional
+    # routers (health, batches, jobs, review, metrics) here.
+    app.include_router(extract_routes.router)
 
     return app
 
