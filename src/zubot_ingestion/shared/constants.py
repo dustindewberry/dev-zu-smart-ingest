@@ -131,6 +131,31 @@ CONFIDENCE_VALIDATION_PENALTY: float = -0.10
 MAX_COMPANION_PAGES: int = 4
 MAX_SIDECAR_METADATA_KEYS: int = 10  # AWS Bedrock KB limit
 
+# Text-only PDF detection thresholds (used by Stage 2 companion generator).
+# A PDF whose extracted text exceeds TEXT_ONLY_THRESHOLD_CHARS characters AND
+# whose page count exceeds TEXT_ONLY_THRESHOLD_PAGES is treated as a text-only
+# document and the visual companion stage is skipped (no rendered descriptions).
+TEXT_ONLY_THRESHOLD_CHARS: int = 5000
+TEXT_ONLY_THRESHOLD_PAGES: int = 10
+
+# Versioned prompt used by Stage 2 (CAP-017) companion description generation.
+# The vision model is instructed to return JSON with two top-level keys so the
+# response parser can deterministically separate the visual description from
+# the technical details when assembling the final markdown companion document.
+COMPANION_DESCRIPTION_PROMPT_V1: str = (
+    "You are inspecting a single page from a construction document. "
+    "Describe the page in two parts and respond with a JSON object containing "
+    "exactly two keys: 'visual_description' and 'technical_details'. "
+    "The 'visual_description' field must be 2-4 sentences describing what is "
+    "visually present on the page (drawings, title blocks, tables, photos, "
+    "schedules, plan views, sections, elevations, legends). "
+    "The 'technical_details' field must be 2-4 sentences listing any "
+    "technical specifics you can read directly from the page (drawing number, "
+    "title, scale, revision, discipline, project name, dimensions, callouts, "
+    "annotations, schedules). "
+    "Respond ONLY with the JSON object, no prose, no markdown fences."
+)
+
 
 # ---------------------------------------------------------------------------
 # OpenTelemetry span names
@@ -221,6 +246,9 @@ __all__ = [
     # Pipeline limits
     "MAX_COMPANION_PAGES",
     "MAX_SIDECAR_METADATA_KEYS",
+    "TEXT_ONLY_THRESHOLD_CHARS",
+    "TEXT_ONLY_THRESHOLD_PAGES",
+    "COMPANION_DESCRIPTION_PROMPT_V1",
     # OTEL
     "OTEL_SPAN_BATCH",
     "OTEL_SPAN_JOB",

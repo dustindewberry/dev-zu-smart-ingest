@@ -5,7 +5,7 @@ that drives a single :class:`Job` through the three-stage extraction
 pipeline:
 
     Stage 1 — multi-source extraction (drawing number, title, document type)
-    Stage 2 — companion description (SKIPPED here, owned by task-18)
+    Stage 2 — companion description (CAP-017, owned by task-18)
     Stage 3 — sidecar assembly (CAP-019)
 
 It then runs the :class:`IConfidenceCalculator` to derive the overall score
@@ -40,6 +40,7 @@ from dataclasses import replace
 from typing import Any
 
 from zubot_ingestion.domain.entities import (
+    CompanionResult,
     ConfidenceAssessment,
     ExtractionResult,
     Job,
@@ -50,6 +51,7 @@ from zubot_ingestion.domain.entities import (
 )
 from zubot_ingestion.domain.enums import ConfidenceTier
 from zubot_ingestion.domain.protocols import (
+    ICompanionGenerator,
     IConfidenceCalculator,
     IExtractor,
     IMetadataWriter,
@@ -147,6 +149,7 @@ class ExtractionOrchestrator(IOrchestrator):
         sidecar_builder: ISidecarBuilder,
         confidence_calculator: IConfidenceCalculator,
         pdf_processor: IPDFProcessor,
+        companion_generator: ICompanionGenerator,
         metadata_writer: IMetadataWriter,
         *,
         logger: logging.Logger | None = None,
@@ -157,6 +160,7 @@ class ExtractionOrchestrator(IOrchestrator):
         self._sidecar_builder = sidecar_builder
         self._confidence_calculator = confidence_calculator
         self._pdf_processor = pdf_processor
+        self._companion_generator = companion_generator
         self._metadata_writer = metadata_writer
         self._log = logger or _LOG
 
@@ -295,10 +299,44 @@ class ExtractionOrchestrator(IOrchestrator):
             extraction_result = _empty_extraction_result()
 
         # ------------------------------------------------------------------
-        # Stage 2 — companion (SKIPPED, owned by task-18)
+        # Stage 2 — companion document generation (CAP-017)
         # ------------------------------------------------------------------
-        pipeline_trace["stages"]["stage2"] = {"skipped": True, "duration_ms": 0}
-        companion_result = None
+        stage2_start = time.perf_counter()
+        companion_result: CompanionResult | None = None
+        try:
+            companion_result = await self._companion_generator.generate(
+                context, extraction_result
+            )
+            pipeline_trace["stages"]["stage2"] = {
+                "duration_ms": _elapsed_ms(stage2_start),
+                "ok": True,
+                "companion_generated": companion_result.companion_generated,
+                "pages_described": companion_result.pages_described,
+            }
+        except Exception as exc:  # noqa: BLE001 - degrade gracefully
+            self._log.exception(
+                "stage2_failed", extra={"job_id": str(job.job_id)}
+            )
+            pipeline_trace["stages"]["stage2"] = {
+                "duration_ms": _elapsed_ms(stage2_start),
+                "ok": False,
+                "error": _format_error(exc),
+            }
+            pipeline_trace["errors"].append(
+                {"stage": "stage2", "error": _format_error(exc)}
+            )
+            errors.append(
+                PipelineError(
+                    stage="stage2",
+                    error_type=type(exc).__name__,
+                    message=str(exc),
+                    recoverable=True,
+                )
+            )
+            companion_result = None
+
+        # Companion validation is owned by task-19; until that lands the
+        # confidence calculator receives ``None`` for the validation result.
         validation_result = None
 
         # ------------------------------------------------------------------

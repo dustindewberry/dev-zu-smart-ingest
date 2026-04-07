@@ -46,6 +46,7 @@ def build_orchestrator() -> "IOrchestrator":
     # plain ``import zubot_ingestion.services``. This matters because the
     # Celery worker's eager mode imports the services package very early.
     from zubot_ingestion.config import get_settings
+    from zubot_ingestion.domain.pipeline.companion import CompanionGenerator
     from zubot_ingestion.domain.pipeline.confidence import ConfidenceCalculator
     from zubot_ingestion.domain.pipeline.extractors.document_type import (
         DocumentTypeExtractor,
@@ -93,6 +94,12 @@ def build_orchestrator() -> "IOrchestrator":
     sidecar_builder = SidecarBuilder()
     confidence_calculator = ConfidenceCalculator()
 
+    companion_generator = CompanionGenerator(
+        pdf_processor=pdf_processor,
+        ollama_client=ollama_client,
+        response_parser=response_parser,
+    )
+
     metadata_writer = ChromaDBMetadataWriter(
         host=settings.CHROMADB_HOST,
         port=settings.CHROMADB_PORT,
@@ -105,6 +112,7 @@ def build_orchestrator() -> "IOrchestrator":
         sidecar_builder=sidecar_builder,
         confidence_calculator=confidence_calculator,
         pdf_processor=pdf_processor,
+        companion_generator=companion_generator,
         metadata_writer=metadata_writer,
     )
 
