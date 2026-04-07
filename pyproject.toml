@@ -125,25 +125,40 @@ exclude_lines = [
 ]
 
 # ---------------------------------------------------------------------------
-# mypy
+# mypy: strict mode for src/zubot_ingestion/
 # ---------------------------------------------------------------------------
 [tool.mypy]
 python_version = "3.12"
 mypy_path = "src"
 packages = ["zubot_ingestion"]
+namespace_packages = true
+explicit_package_bases = true
+files = ["src/zubot_ingestion"]
+exclude = [
+    "^build/",
+    "^dist/",
+    "^\\.venv/",
+    "^alembic/versions/",
+    "^migrations/versions/",
+]
 strict = true
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true
 warn_return_any = true
+warn_unreachable = true
 disallow_untyped_defs = true
 disallow_incomplete_defs = true
 check_untyped_defs = true
 disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
 no_implicit_optional = true
 no_implicit_reexport = true
 strict_equality = true
+extra_checks = true
 show_error_codes = true
+show_error_context = true
 show_column_numbers = true
 pretty = true
 
@@ -152,8 +167,11 @@ module = [
     "celery.*",
     "chromadb.*",
     "fitz.*",
+    "pymupdf.*",
     "slowapi.*",
     "json_repair.*",
+    "kombu.*",
+    "prometheus_client.*",
 ]
 ignore_missing_imports = true
 
@@ -163,7 +181,8 @@ disallow_untyped_defs = false
 disallow_incomplete_defs = false
 
 # ---------------------------------------------------------------------------
-# ruff
+# ruff: lint + format
+# Enforced line length 100, Python 3.12 target, layered architecture-friendly.
 # ---------------------------------------------------------------------------
 [tool.ruff]
 line-length = 100
@@ -174,6 +193,7 @@ extend-exclude = [
     "build",
     "dist",
     "migrations/versions",
+    "alembic/versions",
 ]
 
 [tool.ruff.lint]
@@ -194,11 +214,16 @@ select = [
     "ARG",  # flake8-unused-arguments
     "PTH",  # flake8-use-pathlib
     "ERA",  # eradicate (commented-out code)
+    "PIE",  # flake8-pie
+    "ASYNC",# flake8-async
+    "S",    # flake8-bandit (security)
+    "TCH",  # flake8-type-checking
 ]
 ignore = [
     "E501",    # line too long (handled by formatter)
     "PLR0913", # too many arguments to function call
     "PLR2004", # magic value used in comparison
+    "S101",    # use of assert (acceptable in tests)
 ]
 
 [tool.ruff.lint.per-file-ignores]
@@ -206,10 +231,14 @@ ignore = [
     "ARG001",  # unused function argument (fixtures)
     "PLR2004", # magic values in tests
     "S101",    # use of assert
+    "S105",    # hardcoded password string
+    "S106",    # hardcoded password function argument
 ]
 "src/zubot_ingestion/**/__init__.py" = [
     "F401",    # unused imports in __init__.py are re-exports
 ]
+"alembic/**/*.py" = ["E402", "N806"]
+"migrations/**/*.py" = ["E402", "N806"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["zubot_ingestion"]
@@ -221,5 +250,5 @@ convention = "google"
 [tool.ruff.format]
 quote-style = "double"
 indent-style = "space"
-line-ending = "auto"
+line-ending = "lf"
 docstring-code-format = true

@@ -1,0 +1,32 @@
+[importlinter]
+root_package = zubot_ingestion
+
+[importlinter:contract:layers]
+name = Layered architecture
+type = layers
+layers =
+    zubot_ingestion.api
+    zubot_ingestion.services
+    zubot_ingestion.domain
+    zubot_ingestion.infrastructure
+ignore_imports =
+    zubot_ingestion.api.app -> zubot_ingestion.infrastructure.*
+
+[importlinter:contract:forbidden-domain]
+name = Domain cannot import infrastructure or api
+type = forbidden
+source_modules =
+    zubot_ingestion.domain
+forbidden_modules =
+    zubot_ingestion.infrastructure
+    zubot_ingestion.api
+    zubot_ingestion.services
+
+[importlinter:contract:forbidden-api-pipeline]
+name = API cannot import domain.pipeline internals
+type = forbidden
+source_modules =
+    zubot_ingestion.api
+forbidden_modules =
+    zubot_ingestion.domain.pipeline
+    zubot_ingestion.infrastructure

@@ -1,0 +1,43 @@
+# pydeps configuration for zubot_ingestion dependency graph generation
+# Run: pydeps src/zubot_ingestion --config-file .pydeps.yml
+#
+# Detects import cycles and visualizes the layered architecture defined in
+# boundary-contracts.md (api -> services -> domain -> infrastructure).
+
+# Maximum depth of bacon (transitive imports) to display in the graph
+max_bacon: 4
+
+# Cluster modules by their parent package for clearer layer visualization
+cluster: true
+
+# Limit the depth of the cluster to one level (one box per top-level layer)
+max_cluster_size: 1
+min_cluster_size: 2
+
+# Keep only zubot_ingestion modules; drop stdlib + third-party noise
+only:
+  - zubot_ingestion
+
+# Exclude generated/vendored code and test scaffolding from the graph
+exclude:
+  - zubot_ingestion.*.tests.*
+  - zubot_ingestion.*._generated.*
+
+# Exit non-zero when an import cycle is detected (used by CI)
+show_cycles: true
+
+# Reverse the arrow direction so dependencies point downward (top -> bottom)
+reverse: false
+
+# Output format for the rendered graph
+format: svg
+
+# Default output file (overridable via -o on the command line)
+output: build/zubot_ingestion-deps.svg
+
+# Don't follow imports outside the source tree
+no_output: false
+keep_target_cluster: true
+
+# Verbose listing of cycles to stderr (consumed by lint-architecture.sh)
+show_deps: false
