@@ -36,7 +36,9 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Datastores / external services                                     #
     # ------------------------------------------------------------------ #
-    DATABASE_URL: str  # e.g. postgresql+asyncpg://user:pass@postgres:5432/zubot
+    DATABASE_URL: str = (
+        "postgresql+asyncpg://zubot:zubot@localhost:5432/zubot_ingestion"
+    )
     REDIS_URL: str = "redis://redis:6379"
     OLLAMA_HOST: str = "http://ollama:11434"
     CHROMADB_HOST: str = "chromadb"
@@ -51,8 +53,8 @@ class Settings(BaseSettings):
     # ------------------------------------------------------------------ #
     # Auth secrets (no defaults — must be provided via env / .env)       #
     # ------------------------------------------------------------------ #
-    ZUBOT_INGESTION_API_KEY: str
-    WOD_JWT_SECRET: str
+    ZUBOT_INGESTION_API_KEY: str = ""
+    WOD_JWT_SECRET: str = ""
 
     # ------------------------------------------------------------------ #
     # Logging                                                            #
@@ -75,6 +77,11 @@ class Settings(BaseSettings):
         case_sensitive=True,
         extra="ignore",
     )
+
+    @property
+    def database_url(self) -> str:
+        """Lowercase alias for ``DATABASE_URL`` used by the database layer."""
+        return self.DATABASE_URL
 
 
 @lru_cache(maxsize=1)

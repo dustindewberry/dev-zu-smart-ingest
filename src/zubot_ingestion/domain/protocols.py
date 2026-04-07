@@ -122,24 +122,7 @@ class IJobService(Protocol):
         params: SubmissionParams,
         auth_context: AuthContext,
     ) -> BatchSubmissionResult:
-        """Submit a batch of PDFs for extraction.
-
-        Creates batch and job records, checks for duplicates via file_hash,
-        saves files to temp storage, and enqueues Celery tasks for new jobs.
-        Returns immediately with batch_id for async polling.
-
-        Args:
-            files: List of uploaded PDF files with bytes and metadata
-            params: Submission parameters (mode, callback_url, deployment_id, node_id)
-            auth_context: Authenticated user context
-
-        Returns:
-            BatchSubmissionResult with batch_id, job list, and poll_url
-
-        Raises:
-            ValidationError: If files are invalid (not PDF, too large)
-            RateLimitError: If user has exceeded submission limits
-        """
+        """Submit a batch of PDFs for extraction."""
         ...
 
     async def get_batch(
@@ -147,18 +130,7 @@ class IJobService(Protocol):
         batch_id: UUID,
         auth_context: AuthContext,
     ) -> BatchWithJobs | None:
-        """Retrieve batch status with all jobs.
-
-        Args:
-            batch_id: UUID of the batch
-            auth_context: Authenticated user context for authorization
-
-        Returns:
-            BatchWithJobs if found and authorized, None if not found
-
-        Raises:
-            AuthorizationError: If user cannot access this batch
-        """
+        """Retrieve batch status with all jobs."""
         ...
 
     async def get_job(
@@ -166,18 +138,7 @@ class IJobService(Protocol):
         job_id: UUID,
         auth_context: AuthContext,
     ) -> JobDetail | None:
-        """Retrieve single job with full extraction results.
-
-        Args:
-            job_id: UUID of the job
-            auth_context: Authenticated user context for authorization
-
-        Returns:
-            JobDetail if found and authorized, None if not found
-
-        Raises:
-            AuthorizationError: If user cannot access this job
-        """
+        """Retrieve single job with full extraction results."""
         ...
 
     async def get_job_preview(
@@ -185,18 +146,7 @@ class IJobService(Protocol):
         job_id: UUID,
         auth_context: AuthContext,
     ) -> bytes | None:
-        """Retrieve rendered page image for human review.
-
-        Args:
-            job_id: UUID of the job
-            auth_context: Authenticated user context for authorization
-
-        Returns:
-            JPEG image bytes if available, None if not found or not rendered
-
-        Raises:
-            AuthorizationError: If user cannot access this job
-        """
+        """Retrieve rendered page image for human review."""
         ...
 
 
@@ -210,19 +160,7 @@ class IReviewService(Protocol):
         per_page: int,
         auth_context: AuthContext,
     ) -> PaginatedResult[ReviewQueueItem]:
-        """List jobs awaiting human review.
-
-        Returns jobs with confidence_tier='review' (overall_confidence < 0.5).
-        Results are paginated and ordered by created_at descending.
-
-        Args:
-            page: Page number (1-indexed)
-            per_page: Items per page (max 100)
-            auth_context: Authenticated user context
-
-        Returns:
-            Paginated list of review queue items with extracted values and preview URLs
-        """
+        """List jobs awaiting human review."""
         ...
 
     async def approve(
@@ -232,25 +170,7 @@ class IReviewService(Protocol):
         reviewed_by: str,
         auth_context: AuthContext,
     ) -> ReviewResult:
-        """Approve an extraction with optional corrections.
-
-        Applies any provided corrections to the extraction result,
-        updates job status to 'completed', records the review action,
-        and triggers ChromaDB/Elasticsearch writes.
-
-        Args:
-            job_id: UUID of the job to approve
-            corrections: Optional field corrections (drawing_number, title, etc.)
-            reviewed_by: User ID of the reviewer
-            auth_context: Authenticated user context
-
-        Returns:
-            ReviewResult with updated job status and corrected result
-
-        Raises:
-            NotFoundError: If job doesn't exist or isn't in review queue
-            ValidationError: If corrections fail validation
-        """
+        """Approve an extraction with optional corrections."""
         ...
 
     async def reject(
@@ -260,23 +180,7 @@ class IReviewService(Protocol):
         reviewed_by: str,
         auth_context: AuthContext,
     ) -> ReviewResult:
-        """Reject an extraction.
-
-        Marks job status as 'rejected', records rejection reason,
-        does NOT write to ChromaDB/Elasticsearch.
-
-        Args:
-            job_id: UUID of the job to reject
-            reason: Human-readable rejection reason
-            reviewed_by: User ID of the reviewer
-            auth_context: Authenticated user context
-
-        Returns:
-            ReviewResult with rejected status
-
-        Raises:
-            NotFoundError: If job doesn't exist or isn't in review queue
-        """
+        """Reject an extraction."""
         ...
 
 
@@ -289,27 +193,7 @@ class IOrchestrator(Protocol):
         job: Job,
         pdf_bytes: bytes,
     ) -> PipelineResult:
-        """Execute the complete extraction pipeline.
-
-        Pipeline stages:
-        1. Extract: Drawing number, title, document type from vision+text+filename
-        2. Companion: Multi-page visual description (if visual PDF)
-        3. Sidecar: Merge results into Bedrock KB format
-
-        Handles stage failures gracefully — partial results are preserved.
-        Records OTEL spans for each stage.
-
-        Args:
-            job: Job entity with metadata
-            pdf_bytes: Raw PDF file bytes
-
-        Returns:
-            PipelineResult with extraction_result, companion_text, sidecar,
-            confidence_tier, and any error information
-
-        Raises:
-            ExtractionError: If Stage 1 fails completely (no partial results possible)
-        """
+        """Execute the complete extraction pipeline."""
         ...
 
 
@@ -318,33 +202,11 @@ class ITaskQueue(Protocol):
     """Task queue interface for async job processing (§4.7)."""
 
     def enqueue_extraction(self, job_id: UUID) -> str:
-        """Enqueue a job for async extraction processing.
-
-        Creates a Celery task that will:
-        1. Fetch job from repository
-        2. Load PDF from file storage
-        3. Run extraction pipeline
-        4. Persist results and update job status
-        5. Trigger callback if configured
-
-        Args:
-            job_id: UUID of the job to process
-
-        Returns:
-            Celery task ID for status tracking
-        """
+        """Enqueue a job for async extraction processing."""
         ...
 
     def get_task_status(self, task_id: str) -> TaskStatus:
-        """Check status of an enqueued task.
-
-        Args:
-            task_id: Celery task ID
-
-        Returns:
-            TaskStatus with state (PENDING, STARTED, SUCCESS, FAILURE),
-            result if completed, and traceback if failed
-        """
+        """Check status of an enqueued task."""
         ...
 
 
@@ -358,24 +220,7 @@ class IExtractor(Protocol):
     """Stage 1: Multi-source metadata extraction (§4.8)."""
 
     async def extract(self, context: PipelineContext) -> ExtractionResult:
-        """Extract drawing number, title, and document type.
-
-        Uses three extraction sources:
-        1. Vision: qwen2.5vl:7b analyzes rendered page 1 image
-        2. Text: llama3.1:8b analyzes extracted text content
-        3. Filename: regex patterns match naming conventions
-
-        Results are fused with weighted voting based on source confidence.
-
-        Args:
-            context: Pipeline context with PDF data, rendered images, extracted text
-
-        Returns:
-            ExtractionResult with extracted fields and per-field confidence scores
-
-        Raises:
-            ExtractionError: If all extraction sources fail
-        """
+        """Extract drawing number, title, and document type."""
         ...
 
 
@@ -388,24 +233,7 @@ class ICompanionGenerator(Protocol):
         context: PipelineContext,
         extraction_result: ExtractionResult,
     ) -> CompanionResult:
-        """Generate visual descriptions of document pages.
-
-        Renders pages 0, 1, -2, -1 (first two and last two) and
-        sends each to qwen2.5vl:7b for description. Cross-checks
-        descriptions against Stage 1 extraction results for consistency.
-
-        Args:
-            context: Pipeline context with PDF data and rendered images
-            extraction_result: Stage 1 extraction results for cross-validation
-
-        Returns:
-            CompanionResult with concatenated descriptions, page count,
-            and validation status
-
-        Note:
-            Skipped for text-only PDFs (no visual content to describe).
-            Returns empty CompanionResult with pages_described=0.
-        """
+        """Generate visual descriptions of document pages."""
         ...
 
 
@@ -418,21 +246,7 @@ class ICompanionValidator(Protocol):
         companion_text: str,
         extraction_result: ExtractionResult,
     ) -> ValidationResult:
-        """Cross-check companion description with extracted metadata.
-
-        Checks for consistency:
-        - Drawing number mentioned in description matches extracted value
-        - Document type implied by description matches classification
-        - No contradictory information
-
-        Args:
-            companion_text: Generated visual description text
-            extraction_result: Stage 1 extraction results
-
-        Returns:
-            ValidationResult with passed status, warnings list, and
-            confidence_adjustment factor (negative if inconsistencies found)
-        """
+        """Cross-check companion description with extracted metadata."""
         ...
 
 
@@ -446,23 +260,7 @@ class ISidecarBuilder(Protocol):
         companion_result: CompanionResult | None,
         job: Job,
     ) -> SidecarDocument:
-        """Build Bedrock KB sidecar document.
-
-        Assembles all extraction and companion data into the standard
-        sidecar format with metadataAttributes object. Validates against
-        JSON Schema before returning.
-
-        Args:
-            extraction_result: Stage 1 extraction results
-            companion_result: Stage 2 companion result (None if skipped)
-            job: Job entity with filename, file_hash, etc.
-
-        Returns:
-            SidecarDocument validated against Bedrock KB schema
-
-        Raises:
-            ValidationError: If assembled sidecar fails schema validation
-        """
+        """Build Bedrock KB sidecar document."""
         ...
 
 
@@ -475,27 +273,7 @@ class IConfidenceCalculator(Protocol):
         extraction_result: ExtractionResult,
         validation_result: ValidationResult | None,
     ) -> ConfidenceAssessment:
-        """Compute overall confidence score and determine tier.
-
-        Algorithm:
-        1. Weighted average of field confidences:
-           - drawing_number_confidence: 40%
-           - title_confidence: 30%
-           - document_type_confidence: 30%
-        2. Apply validation adjustment (if validation failed, reduce by 0.1)
-        3. Clamp to [0.0, 1.0]
-        4. Assign tier:
-           - AUTO: overall >= 0.8 (proceed automatically)
-           - SPOT: 0.5 <= overall < 0.8 (spot check recommended)
-           - REVIEW: overall < 0.5 (human review required)
-
-        Args:
-            extraction_result: Extraction results with per-field confidences
-            validation_result: Companion validation result (optional)
-
-        Returns:
-            ConfidenceAssessment with overall score, tier, and breakdown
-        """
+        """Compute overall confidence score and determine tier."""
         ...
 
 
@@ -504,20 +282,7 @@ class IFilenameParser(Protocol):
     """Extract metadata hints from filename patterns (§4.13)."""
 
     def parse(self, filename: str) -> FilenameHints:
-        """Parse filename for drawing number and revision hints.
-
-        Matches against known patterns:
-        - KXC-B6-001-Y-27-1905-301.pdf → drawing_number=KXC-B6-001-Y-27-1905-301
-        - Some_Drawing_Rev_P02.pdf → revision=P02
-        - 12345_A1.pdf → drawing_number=12345, revision=A1
-
-        Args:
-            filename: Original filename (with or without extension)
-
-        Returns:
-            FilenameHints with extracted hints and confidence score
-            (confidence based on pattern match strength)
-        """
+        """Parse filename for drawing number and revision hints."""
         ...
 
 
@@ -526,24 +291,7 @@ class IResponseParser(Protocol):
     """Parse and repair Ollama JSON responses (§4.14)."""
 
     def parse(self, raw_response: str, expected_schema: type[T]) -> T:
-        """Parse Ollama response with repair fallbacks.
-
-        Repair strategies (in order):
-        1. Direct JSON parse
-        2. json-repair library for common malformations
-        3. Regex extraction of key fields
-        4. Partial result with nulls for missing fields
-
-        Args:
-            raw_response: Raw string response from Ollama
-            expected_schema: Pydantic model or dataclass for validation
-
-        Returns:
-            Parsed and validated response object
-
-        Raises:
-            ParseError: If all repair strategies fail
-        """
+        """Parse Ollama response with repair fallbacks."""
         ...
 
 
@@ -557,31 +305,11 @@ class IPDFProcessor(Protocol):
     """PDF processing interface for text extraction and page rendering (§4.15)."""
 
     def load(self, pdf_bytes: bytes) -> PDFData:
-        """Load PDF and extract basic information.
-
-        Args:
-            pdf_bytes: Raw PDF file bytes
-
-        Returns:
-            PDFData with page_count, file_hash, and metadata
-
-        Raises:
-            PDFLoadError: If PDF is corrupted or encrypted
-        """
+        """Load PDF and extract basic information."""
         ...
 
     def extract_text(self, pdf_bytes: bytes) -> str:
-        """Extract all text content from PDF.
-
-        Args:
-            pdf_bytes: Raw PDF file bytes
-
-        Returns:
-            Concatenated text from all pages with page separators
-
-        Raises:
-            PDFLoadError: If PDF is corrupted
-        """
+        """Extract all text content from PDF."""
         ...
 
     def render_page(
@@ -591,21 +319,7 @@ class IPDFProcessor(Protocol):
         dpi: int = 200,
         scale: float = 2.0,
     ) -> RenderedPage:
-        """Render a single page to JPEG image.
-
-        Args:
-            pdf_bytes: Raw PDF file bytes
-            page_number: Page index (0-based, negative for from-end)
-            dpi: Resolution for rendering
-            scale: Scale multiplier
-
-        Returns:
-            RenderedPage with jpeg_bytes, base64 encoding, and dimensions
-
-        Raises:
-            PDFLoadError: If PDF is corrupted
-            PageNotFoundError: If page_number is out of range
-        """
+        """Render a single page to JPEG image."""
         ...
 
     def render_pages(
@@ -615,17 +329,7 @@ class IPDFProcessor(Protocol):
         dpi: int = 200,
         scale: float = 2.0,
     ) -> list[RenderedPage]:
-        """Render multiple pages to JPEG images.
-
-        Args:
-            pdf_bytes: Raw PDF file bytes
-            page_numbers: List of page indices (0-based, negative for from-end)
-            dpi: Resolution for rendering
-            scale: Scale multiplier
-
-        Returns:
-            List of RenderedPage objects
-        """
+        """Render multiple pages to JPEG images."""
         ...
 
 
@@ -641,22 +345,7 @@ class IOllamaClient(Protocol):
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
     ) -> OllamaResponse:
-        """Generate response from vision model with image input.
-
-        Args:
-            image_base64: Base64-encoded JPEG image
-            prompt: Instruction prompt for the model
-            model: Vision model name
-            temperature: Sampling temperature (0 for deterministic)
-            timeout_seconds: Request timeout
-
-        Returns:
-            OllamaResponse with response text and model metadata
-
-        Raises:
-            OllamaTimeoutError: If request exceeds timeout
-            OllamaUnavailableError: If model is not loaded or server is down
-        """
+        """Generate response from vision model with image input."""
         ...
 
     async def generate_text(
@@ -667,33 +356,11 @@ class IOllamaClient(Protocol):
         temperature: float = 0.0,
         timeout_seconds: float = 30.0,
     ) -> OllamaResponse:
-        """Generate response from text model.
-
-        Args:
-            text: Input text content
-            prompt: Instruction prompt for the model
-            model: Text model name
-            temperature: Sampling temperature
-            timeout_seconds: Request timeout
-
-        Returns:
-            OllamaResponse with response text and model metadata
-
-        Raises:
-            OllamaTimeoutError: If request exceeds timeout
-            OllamaUnavailableError: If model is not loaded
-        """
+        """Generate response from text model."""
         ...
 
     async def check_model_available(self, model: str) -> bool:
-        """Check if a model is loaded and available.
-
-        Args:
-            model: Model name to check
-
-        Returns:
-            True if model is available, False otherwise
-        """
+        """Check if a model is loaded and available."""
         ...
 
 
@@ -702,62 +369,26 @@ class IJobRepository(Protocol):
     """Repository interface for job and batch persistence (§4.17)."""
 
     async def create_batch(self, batch: Batch, jobs: list[Job]) -> Batch:
-        """Create batch with jobs in a single transaction.
-
-        Args:
-            batch: Batch entity to create
-            jobs: List of job entities to create
-
-        Returns:
-            Created batch with assigned IDs
-        """
+        """Create batch with jobs in a single transaction."""
         ...
 
     async def get_batch(self, batch_id: UUID) -> Batch | None:
-        """Retrieve batch by ID.
-
-        Args:
-            batch_id: UUID of the batch
-
-        Returns:
-            Batch if found, None otherwise
-        """
+        """Retrieve batch by ID."""
         ...
 
     async def get_batch_with_jobs(
         self,
         batch_id: UUID,
     ) -> tuple[Batch, list[Job]] | None:
-        """Retrieve batch with all associated jobs.
-
-        Args:
-            batch_id: UUID of the batch
-
-        Returns:
-            Tuple of (Batch, list[Job]) if found, None otherwise
-        """
+        """Retrieve batch with all associated jobs."""
         ...
 
     async def get_job(self, job_id: UUID) -> Job | None:
-        """Retrieve job by ID.
-
-        Args:
-            job_id: UUID of the job
-
-        Returns:
-            Job if found, None otherwise
-        """
+        """Retrieve job by ID."""
         ...
 
     async def get_job_by_file_hash(self, file_hash: str) -> Job | None:
-        """Retrieve job by file hash (for deduplication).
-
-        Args:
-            file_hash: SHA-256 hash of the file
-
-        Returns:
-            Job if found, None otherwise
-        """
+        """Retrieve job by file hash (for deduplication)."""
         ...
 
     async def update_job_status(
@@ -767,14 +398,7 @@ class IJobRepository(Protocol):
         result: dict[str, Any] | None = None,
         error_message: str | None = None,
     ) -> None:
-        """Update job status and optionally result/error.
-
-        Args:
-            job_id: UUID of the job
-            status: New status
-            result: Extraction result dict (optional)
-            error_message: Error message if failed (optional)
-        """
+        """Update job status and optionally result/error."""
         ...
 
     async def get_pending_reviews(
@@ -782,29 +406,14 @@ class IJobRepository(Protocol):
         page: int,
         per_page: int,
     ) -> PaginatedResult[Job]:
-        """Get jobs with confidence_tier='review' for human review.
-
-        Args:
-            page: Page number (1-indexed)
-            per_page: Items per page
-
-        Returns:
-            Paginated list of jobs awaiting review
-        """
+        """Get jobs with confidence_tier='review' for human review."""
         ...
 
     async def create_review_action(
         self,
         review_action: ReviewAction,
     ) -> ReviewAction:
-        """Record a review action (approval or rejection).
-
-        Args:
-            review_action: Review action entity
-
-        Returns:
-            Created review action with ID
-        """
+        """Record a review action (approval or rejection)."""
         ...
 
 
@@ -819,28 +428,11 @@ class IMetadataWriter(Protocol):
         deployment_id: int | None,
         node_id: int | None,
     ) -> bool:
-        """Write enriched metadata to ChromaDB collection.
-
-        Collection name format: zubot_metadata_{deployment_id}_{node_id}
-        If deployment_id/node_id are None, uses 'default' collection.
-
-        Args:
-            document_id: Unique document identifier (file_hash)
-            sidecar: Sidecar document with metadataAttributes
-            deployment_id: Deployment ID for collection routing
-            node_id: Node ID for collection routing
-
-        Returns:
-            True if write succeeded, False otherwise
-        """
+        """Write enriched metadata to ChromaDB collection."""
         ...
 
     async def check_connection(self) -> bool:
-        """Check ChromaDB connection health.
-
-        Returns:
-            True if connected, False otherwise
-        """
+        """Check ChromaDB connection health."""
         ...
 
 
@@ -855,28 +447,11 @@ class ISearchIndexer(Protocol):
         companion_result: CompanionResult,
         deployment_id: int | None,
     ) -> bool:
-        """Index companion document in Elasticsearch.
-
-        Index name format: zubot_companion_{deployment_id}
-        If deployment_id is None, uses 'zubot_companion_default'.
-
-        Args:
-            document_id: Unique document identifier (file_hash)
-            extraction_result: Extraction metadata for structured fields
-            companion_result: Companion text for full-text search
-            deployment_id: Deployment ID for index routing
-
-        Returns:
-            True if indexing succeeded, False otherwise
-        """
+        """Index companion document in Elasticsearch."""
         ...
 
     async def check_connection(self) -> bool:
-        """Check Elasticsearch connection health.
-
-        Returns:
-            True if connected, False otherwise
-        """
+        """Check Elasticsearch connection health."""
         ...
 
 
@@ -890,19 +465,7 @@ class ICallbackClient(Protocol):
         job: Job,
         api_key: str,
     ) -> bool:
-        """Send job completion notification to callback URL.
-
-        Sends POST request with job result payload. Retries with
-        exponential backoff on failure (max 3 attempts).
-
-        Args:
-            callback_url: URL to POST notification to
-            job: Completed job with result
-            api_key: API key for authentication header
-
-        Returns:
-            True if notification delivered, False if all retries failed
-        """
+        """Send job completion notification to callback URL."""
         ...
 
 

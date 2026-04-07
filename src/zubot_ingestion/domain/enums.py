@@ -21,11 +21,21 @@ class JobStatus(str, Enum):
 
     QUEUED = "queued"  # In Celery queue, not yet picked up
     PROCESSING = "processing"  # Worker executing pipeline
+    IN_PROGRESS = "in_progress"  # Alias used by infrastructure/database layer
     COMPLETED = "completed"  # Successfully extracted, confidence >= review threshold
     FAILED = "failed"  # Unrecoverable error
     REVIEW = "review"  # Confidence < review threshold, needs human
     REJECTED = "rejected"  # Human rejected the result
     CACHED = "cached"  # Returned from dedup cache (duplicate file_hash)
+
+
+class BatchStatus(str, Enum):
+    """Lifecycle status for a submission batch."""
+
+    QUEUED = "queued"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
 
 
 class ExtractionMode(str, Enum):
@@ -37,6 +47,8 @@ class ExtractionMode(str, Enum):
     AUTO = "auto"  # Auto-select best strategy based on PDF content
     DRAWING = "drawing"  # Force drawing-centric extraction (vision-first)
     TITLE = "title"  # Force title-centric extraction (text-first)
+    FAST = "fast"  # Fast mode used by infrastructure/database layer
+    ACCURATE = "accurate"  # Accurate mode used by infrastructure/database layer
 
 
 class ConfidenceTier(str, Enum):
@@ -48,6 +60,13 @@ class ConfidenceTier(str, Enum):
     AUTO = "auto"  # overall >= 0.8: proceed automatically
     SPOT = "spot"  # 0.5 <= overall < 0.8: spot check recommended
     REVIEW = "review"  # overall < 0.5: human review required
+
+
+class ReviewActionType(str, Enum):
+    """Human review decision outcome."""
+
+    APPROVED = "approved"
+    REJECTED = "rejected"
 
 
 class DocumentType(str, Enum):
@@ -98,9 +117,11 @@ class Discipline(str, Enum):
 
 
 __all__ = [
+    "BatchStatus",
     "ConfidenceTier",
     "Discipline",
     "DocumentType",
     "ExtractionMode",
     "JobStatus",
+    "ReviewActionType",
 ]

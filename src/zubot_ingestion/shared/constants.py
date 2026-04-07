@@ -24,6 +24,16 @@ SERVICE_VERSION: str = "0.1.0"
 
 
 # ---------------------------------------------------------------------------
+# Database connection pool defaults (CAP-004)
+# ---------------------------------------------------------------------------
+
+DB_POOL_SIZE: int = 10
+DB_MAX_OVERFLOW: int = 20
+DB_POOL_TIMEOUT: int = 30
+DB_POOL_RECYCLE: int = 3600
+
+
+# ---------------------------------------------------------------------------
 # Celery / Redis
 # ---------------------------------------------------------------------------
 
@@ -102,6 +112,11 @@ PROVENANCE_INGESTION_SERVICE: str = "zubot-ingestion"
 CONFIDENCE_TIER_AUTO_MIN: float = 0.8
 CONFIDENCE_TIER_SPOT_MIN: float = 0.5
 
+# String-valued tier constants (used by repository queries against the DB)
+CONFIDENCE_TIER_AUTO: str = "auto"
+CONFIDENCE_TIER_SPOT: str = "spot"
+CONFIDENCE_TIER_REVIEW: str = "review"
+
 CONFIDENCE_WEIGHT_DRAWING_NUMBER: float = 0.40
 CONFIDENCE_WEIGHT_TITLE: float = 0.30
 CONFIDENCE_WEIGHT_DOCUMENT_TYPE: float = 0.30
@@ -171,6 +186,11 @@ __all__ = [
     # Service identifiers
     "SERVICE_NAME",
     "SERVICE_VERSION",
+    # Database pool
+    "DB_POOL_SIZE",
+    "DB_MAX_OVERFLOW",
+    "DB_POOL_TIMEOUT",
+    "DB_POOL_RECYCLE",
     # Celery / Redis
     "CELERY_BROKER_DB",
     "CELERY_RESULT_DB",
@@ -191,6 +211,9 @@ __all__ = [
     # Confidence
     "CONFIDENCE_TIER_AUTO_MIN",
     "CONFIDENCE_TIER_SPOT_MIN",
+    "CONFIDENCE_TIER_AUTO",
+    "CONFIDENCE_TIER_SPOT",
+    "CONFIDENCE_TIER_REVIEW",
     "CONFIDENCE_WEIGHT_DRAWING_NUMBER",
     "CONFIDENCE_WEIGHT_TITLE",
     "CONFIDENCE_WEIGHT_DOCUMENT_TYPE",
