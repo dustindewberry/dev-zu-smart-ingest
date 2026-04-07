@@ -26,6 +26,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from zubot_ingestion.api.middleware.auth import AuthMiddleware
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type-checkers
@@ -112,6 +113,11 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    # Authentication — CAP-026, implemented in step-10 (sharp-owl). Must be
+    # registered AFTER CORS so that pre-flight OPTIONS requests are handled
+    # by CORSMiddleware before AuthMiddleware sees them.
+    app.add_middleware(AuthMiddleware)
+
     # Placeholder exception handler. Specific custom exceptions will be
     # registered alongside the routes that raise them in later steps.
     app.add_exception_handler(Exception, _unhandled_exception_handler)
@@ -120,3 +126,6 @@ def create_app() -> FastAPI:
     # steps (health, extract, batches, jobs, review, metrics).
 
     return app
+
+
+__all__ = ["create_app", "lifespan"]
