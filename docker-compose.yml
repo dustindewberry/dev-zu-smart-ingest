@@ -1,0 +1,103 @@
+# docker-compose.yml — zubot-ingestion (CAP-002)
+#
+# This stack is intentionally STANDALONE. The shared infrastructure
+# (Ollama, Redis, ChromaDB, Elasticsearch, Phoenix) is reused from the
+# ai-chatbot stack at /Users/dustindewberry/gitrepos/ai-chatbot and
+# reached over the host network via host.docker.internal. Only the
+# zubot-ingestion API, its Celery worker, and a dedicated Postgres
+# instance are defined here.
+#
+# Postgres uses host port 5433 to avoid colliding with the ai-chatbot
+# Postgres on 5432.
+#
+# To optionally join the ai-chatbot Docker network instead, see README.md
+# § "Joining the ai-chatbot Docker network".
+
+services:
+  zubot-ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zubot-ingestion:latest
+    container_name: zubot-ingestion
+    restart: unless-stopped
+    ports:
+      - "4243:4243"
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: http://host.docker.internal:11434
+      REDIS_URL: redis://host.docker.internal:6379
+      CHROMADB_HOST: host.docker.internal
+      CHROMADB_PORT: "8000"
+      ELASTICSEARCH_URL: http://host.docker.internal:9200
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
+      DATABASE_URL: postgresql+asyncpg://zubot:zubot_dev@postgres:5432/zubot_ingestion
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/var/log/zubot-ingestion
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4243/health"]
+      interval: 30s
+      timeout: 5s
+      start_period: 30s
+      retries: 3
+
+  zubot-ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: zubot-ingestion:latest
+    container_name: zubot-ingestion-worker
+    restart: unless-stopped
+    command:
+      - celery
+      - -A
+      - zubot_ingestion.services.celery_app
+      - worker
+      - --loglevel=info
+      - --concurrency=2
+    env_file:
+      - .env
+    environment:
+      OLLAMA_HOST: http://host.docker.internal:11434
+      REDIS_URL: redis://host.docker.internal:6379
+      CHROMADB_HOST: host.docker.internal
+      CHROMADB_PORT: "8000"
+      ELASTICSEARCH_URL: http://host.docker.internal:9200
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
+      DATABASE_URL: postgresql+asyncpg://zubot:zubot_dev@postgres:5432/zubot_ingestion
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./logs:/var/log/zubot-ingestion
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: zubot-ingestion-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: zubot_ingestion
+      POSTGRES_USER: zubot
+      POSTGRES_PASSWORD: zubot_dev
+    ports:
+      # Host port 5433 avoids conflict with the ai-chatbot Postgres on 5432.
+      - "5433:5432"
+    volumes:
+      - zubot_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zubot -d zubot_ingestion"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  zubot_postgres_data:
