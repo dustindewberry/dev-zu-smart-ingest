@@ -155,6 +155,23 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
     if job is None:
         raise LookupError(f"job {job_id} not found in repository")
 
+    # Fetch the parent batch so we can forward deployment_id / node_id to the
+    # orchestrator's metadata writer (CAP-023). Failure to load the batch is
+    # tolerated — the orchestrator will fall back to the 'default' ChromaDB
+    # collection if both IDs are None.
+    deployment_id: int | None = None
+    node_id: int | None = None
+    try:
+        batch = await repo.get_batch(job.batch_id)
+        if batch is not None:
+            deployment_id = batch.deployment_id
+            node_id = batch.node_id
+    except Exception:  # noqa: BLE001 - tolerate missing batch
+        _LOG.warning(
+            "extract_document_task_batch_lookup_failed",
+            extra={"job_id": str(job.job_id), "batch_id": str(job.batch_id)},
+        )
+
     pdf_path = TEMP_PDF_ROOT / str(job.batch_id) / f"{job.job_id}.pdf"
     pdf_bytes = pdf_path.read_bytes()
 
@@ -169,7 +186,12 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
         error_message=None,
     )
 
-    pipeline_result = await orchestrator.run_pipeline(job, pdf_bytes)
+    pipeline_result = await orchestrator.run_pipeline(
+        job,
+        pdf_bytes,
+        deployment_id=deployment_id,
+        node_id=node_id,
+    )
 
     # Choose the persisted job status from the assessment tier:
     #   AUTO   -> COMPLETED   (auto-publish)

@@ -1,1 +1,1 @@
-"""ChromaDB adapter for metadata/vector storage."""
+"""ChromaDB infrastructure adapters for the Zubot Smart Ingestion Service."""

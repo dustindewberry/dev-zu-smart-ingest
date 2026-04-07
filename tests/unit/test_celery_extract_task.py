@@ -57,6 +57,15 @@ class FakeRepository:
             return self._job
         return None
 
+    async def get_batch(self, batch_id: UUID) -> None:
+        # FakeRepository is used by the celery task body which fetches the
+        # parent batch to forward deployment_id/node_id to the orchestrator.
+        # Returning None is the documented "tolerated missing batch" path:
+        # the task will catch and log, then call run_pipeline with both
+        # IDs as None. The FakeOrchestrator records the kwargs it receives
+        # so callers can assert on them.
+        return None
+
     async def update_job_status(
         self,
         job_id: UUID,
@@ -83,11 +92,22 @@ class FakeOrchestrator:
         self.calls: int = 0
         self.last_job: Job | None = None
         self.last_pdf_bytes: bytes | None = None
+        self.last_deployment_id: int | None = None
+        self.last_node_id: int | None = None
 
-    async def run_pipeline(self, job: Job, pdf_bytes: bytes) -> PipelineResult:
+    async def run_pipeline(
+        self,
+        job: Job,
+        pdf_bytes: bytes,
+        *,
+        deployment_id: int | None = None,
+        node_id: int | None = None,
+    ) -> PipelineResult:
         self.calls += 1
         self.last_job = job
         self.last_pdf_bytes = pdf_bytes
+        self.last_deployment_id = deployment_id
+        self.last_node_id = node_id
         return self._result
 
 

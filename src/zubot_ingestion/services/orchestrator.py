@@ -52,6 +52,7 @@ from zubot_ingestion.domain.enums import ConfidenceTier
 from zubot_ingestion.domain.protocols import (
     IConfidenceCalculator,
     IExtractor,
+    IMetadataWriter,
     IOrchestrator,
     IPDFProcessor,
     ISidecarBuilder,
@@ -146,6 +147,7 @@ class ExtractionOrchestrator(IOrchestrator):
         sidecar_builder: ISidecarBuilder,
         confidence_calculator: IConfidenceCalculator,
         pdf_processor: IPDFProcessor,
+        metadata_writer: IMetadataWriter,
         *,
         logger: logging.Logger | None = None,
     ) -> None:
@@ -155,12 +157,16 @@ class ExtractionOrchestrator(IOrchestrator):
         self._sidecar_builder = sidecar_builder
         self._confidence_calculator = confidence_calculator
         self._pdf_processor = pdf_processor
+        self._metadata_writer = metadata_writer
         self._log = logger or _LOG
 
     async def run_pipeline(
         self,
         job: Job,
         pdf_bytes: bytes,
+        *,
+        deployment_id: int | None = None,
+        node_id: int | None = None,
     ) -> PipelineResult:
         """Execute the full extraction pipeline for a single job.
 
@@ -380,6 +386,77 @@ class ExtractionOrchestrator(IOrchestrator):
             confidence_score=assessment.overall_confidence,
             confidence_tier=assessment.tier,
         )
+
+        # ------------------------------------------------------------------
+        # Metadata write (CAP-023)
+        #
+        # AUTO and SPOT-tier results are written to ChromaDB immediately so
+        # they become searchable. REVIEW-tier results are NOT written here —
+        # they go to the human review queue and are flushed to ChromaDB only
+        # after a reviewer approves them (CAP-022, owned by task-20).
+        #
+        # Failures are tolerated: the writer logs and returns False on
+        # error, and the orchestrator records the failure in pipeline_trace
+        # without raising. This keeps the pipeline structurally valid even
+        # when ChromaDB is unreachable.
+        # ------------------------------------------------------------------
+        metadata_write_start = time.perf_counter()
+        if assessment.tier != ConfidenceTier.REVIEW:
+            try:
+                wrote = await self._metadata_writer.write_metadata(
+                    document_id=str(job.file_hash),
+                    sidecar=sidecar,
+                    deployment_id=deployment_id,
+                    node_id=node_id,
+                )
+                pipeline_trace["stages"]["metadata_write"] = {
+                    "duration_ms": _elapsed_ms(metadata_write_start),
+                    "ok": wrote,
+                    "skipped": False,
+                }
+                if not wrote:
+                    pipeline_trace["errors"].append(
+                        {
+                            "stage": "metadata_write",
+                            "error": "metadata_writer.write_metadata returned False",
+                        }
+                    )
+                    errors.append(
+                        PipelineError(
+                            stage="metadata_write",
+                            error_type="MetadataWriteFailed",
+                            message="metadata_writer.write_metadata returned False",
+                            recoverable=True,
+                        )
+                    )
+            except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                self._log.exception(
+                    "metadata_write_failed", extra={"job_id": str(job.job_id)}
+                )
+                pipeline_trace["stages"]["metadata_write"] = {
+                    "duration_ms": _elapsed_ms(metadata_write_start),
+                    "ok": False,
+                    "skipped": False,
+                    "error": _format_error(exc),
+                }
+                pipeline_trace["errors"].append(
+                    {"stage": "metadata_write", "error": _format_error(exc)}
+                )
+                errors.append(
+                    PipelineError(
+                        stage="metadata_write",
+                        error_type=type(exc).__name__,
+                        message=str(exc),
+                        recoverable=True,
+                    )
+                )
+        else:
+            pipeline_trace["stages"]["metadata_write"] = {
+                "duration_ms": 0,
+                "ok": True,
+                "skipped": True,
+                "reason": "review_tier_routes_to_review_queue",
+            }
 
         return PipelineResult(
             extraction_result=extraction_result,

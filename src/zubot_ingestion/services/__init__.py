@@ -45,6 +45,7 @@ def build_orchestrator() -> "IOrchestrator":
     # Lazy imports: keep infrastructure modules off the import graph of
     # plain ``import zubot_ingestion.services``. This matters because the
     # Celery worker's eager mode imports the services package very early.
+    from zubot_ingestion.config import get_settings
     from zubot_ingestion.domain.pipeline.confidence import ConfidenceCalculator
     from zubot_ingestion.domain.pipeline.extractors.document_type import (
         DocumentTypeExtractor,
@@ -58,9 +59,14 @@ def build_orchestrator() -> "IOrchestrator":
     from zubot_ingestion.domain.pipeline.extractors.title import TitleExtractor
     from zubot_ingestion.domain.pipeline.json_parser import JsonResponseParser
     from zubot_ingestion.domain.pipeline.sidecar import SidecarBuilder
+    from zubot_ingestion.infrastructure.chromadb.writer import (
+        ChromaDBMetadataWriter,
+    )
     from zubot_ingestion.infrastructure.ollama.client import OllamaClient
     from zubot_ingestion.infrastructure.pdf.processor import PyMuPDFProcessor
     from zubot_ingestion.services.orchestrator import ExtractionOrchestrator
+
+    settings = get_settings()
 
     pdf_processor = PyMuPDFProcessor()
     ollama_client = OllamaClient()
@@ -87,6 +93,11 @@ def build_orchestrator() -> "IOrchestrator":
     sidecar_builder = SidecarBuilder()
     confidence_calculator = ConfidenceCalculator()
 
+    metadata_writer = ChromaDBMetadataWriter(
+        host=settings.CHROMADB_HOST,
+        port=settings.CHROMADB_PORT,
+    )
+
     return ExtractionOrchestrator(
         drawing_number_extractor=drawing_number_extractor,
         title_extractor=title_extractor,
@@ -94,6 +105,7 @@ def build_orchestrator() -> "IOrchestrator":
         sidecar_builder=sidecar_builder,
         confidence_calculator=confidence_calculator,
         pdf_processor=pdf_processor,
+        metadata_writer=metadata_writer,
     )
 
 
