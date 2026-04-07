@@ -27,6 +27,7 @@ from fastapi.responses import JSONResponse
 from zubot_ingestion.api.middleware.auth import AuthMiddleware
 from zubot_ingestion.api.routes import batches as batches_routes
 from zubot_ingestion.api.routes import extract as extract_routes
+from zubot_ingestion.api.routes import health as health_routes
 from zubot_ingestion.api.routes import jobs as jobs_routes
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
@@ -127,10 +128,12 @@ def create_app() -> FastAPI:
     # - CAP-009 (POST /extract)
     # - CAP-010 (GET /batches/{batch_id})
     # - CAP-011 (GET /jobs/{job_id})
-    # Future steps mount additional routers (health, review, metrics) here.
+    # - CAP-003 (GET /health) — step-13 (keen-hare)
+    # Future steps mount additional routers (review, metrics) here.
     app.include_router(extract_routes.router)
     app.include_router(batches_routes.router)
     app.include_router(jobs_routes.router)
+    app.include_router(health_routes.router)
 
     return app
 
