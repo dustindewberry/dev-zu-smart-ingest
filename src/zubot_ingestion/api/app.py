@@ -11,6 +11,7 @@ middleware and routers produced by sibling steps:
 * OpenAPI metadata sourced from ``zubot_ingestion.shared.constants``
 * Routers mounted from each step's router module (extract, health,
   batches, jobs, review, metrics)
+* OTEL tracer provider initialized on startup via ``setup_otel`` (CAP-027)
 """
 
 from __future__ import annotations
@@ -29,6 +30,8 @@ from zubot_ingestion.api.routes import batches as batches_routes
 from zubot_ingestion.api.routes import extract as extract_routes
 from zubot_ingestion.api.routes import health as health_routes
 from zubot_ingestion.api.routes import jobs as jobs_routes
+from zubot_ingestion.config import get_settings
+from zubot_ingestion.infrastructure.otel.instrumentation import setup_otel
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type-checkers
@@ -41,10 +44,12 @@ logger = logging.getLogger(SERVICE_NAME)
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup before ``yield``, shutdown after.
 
-    For now this is a placeholder that simply logs the transitions. Later
+    Initializes OTEL tracing on startup and logs the transitions. Later
     steps will attach concrete resource handles (database engine, Redis
-    pool, Ollama HTTP client, OTEL provider) to ``app.state`` here.
+    pool, Ollama HTTP client) to ``app.state`` here.
     """
+    settings = get_settings()
+    setup_otel(otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT)
     logger.info(
         "service.startup",
         extra={"service": SERVICE_NAME, "version": SERVICE_VERSION},
@@ -91,6 +96,7 @@ def create_app() -> FastAPI:
     can build isolated app instances and so that the ASGI runner
     (uvicorn) can be configured via :mod:`zubot_ingestion.__main__`.
     """
+    settings = get_settings()
     app = FastAPI(
         title="Zubot Ingestion Service",
         version=SERVICE_VERSION,
@@ -104,6 +110,9 @@ def create_app() -> FastAPI:
         openapi_url="/openapi.json",
         lifespan=lifespan,
     )
+    # Store settings on app.state so route handlers (and tests) can access
+    # the same singleton.
+    app.state.settings = settings
 
     # CORS — wide-open for local development. A later step will tighten
     # this via the Settings object once route-level auth is in place.
