@@ -1,0 +1,159 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zubot-ingestion"
+version = "0.1.0"
+description = "Document ingestion and metadata extraction service for construction PDFs."
+requires-python = ">=3.12"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+# ---------------------------------------------------------------------------
+# Ruff: lint + format
+# Enforced line length 100, Python 3.12 target, layered architecture-friendly.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "UP",   # pyupgrade
+    "SIM",  # flake8-simplify
+    "C4",   # flake8-comprehensions
+    "PIE",  # flake8-pie
+    "RUF",  # ruff-specific rules
+    "N",    # pep8-naming
+    "ASYNC",# flake8-async
+    "S",    # flake8-bandit (security)
+    "PL",   # pylint
+    "TCH",  # flake8-type-checking
+]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "PLR0913", # too many arguments (acceptable for service methods)
+    "S101",    # use of assert (acceptable in tests)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101", "PLR2004", "S105", "S106"]
+"alembic/**/*.py" = ["E402", "N806"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["zubot_ingestion"]
+combine-as-imports = true
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true
+
+# ---------------------------------------------------------------------------
+# Mypy: strict mode for src/zubot_ingestion/
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+namespace_packages = true
+explicit_package_bases = true
+files = ["src/zubot_ingestion"]
+exclude = [
+    "^build/",
+    "^dist/",
+    "^\\.venv/",
+    "^alembic/versions/",
+]
+
+# Strict mode (equivalent to --strict)
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+check_untyped_defs = true
+no_implicit_optional = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
+
+# Pretty output with error codes
+pretty = true
+show_error_codes = true
+show_error_context = true
+show_column_numbers = true
+
+[[tool.mypy.overrides]]
+# Third-party libraries without type stubs
+module = [
+    "pymupdf.*",
+    "fitz.*",
+    "chromadb.*",
+    "json_repair.*",
+    "slowapi.*",
+    "celery.*",
+    "kombu.*",
+    "prometheus_client.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+# Tests don't need strict typing
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# ---------------------------------------------------------------------------
+# Pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = [
+    "--strict-markers",
+    "--strict-config",
+    "-ra",
+]
+markers = [
+    "unit: unit tests",
+    "integration: integration tests requiring external services",
+    "e2e: end-to-end tests",
+]
+
+# ---------------------------------------------------------------------------
+# Coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+source = ["src/zubot_ingestion"]
+branch = true
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]

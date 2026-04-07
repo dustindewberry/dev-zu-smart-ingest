@@ -1,0 +1,64 @@
+# Pre-commit hooks for zubot-ingestion
+#
+# Install with:    pre-commit install
+# Run manually:    pre-commit run --all-files
+#
+# Hook order matters: cheap formatting/whitespace fixes first, then ruff,
+# then mypy, then the architectural lint-imports check (slowest, most strict).
+
+repos:
+  # ---------------------------------------------------------------------
+  # 1. Generic file hygiene
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: end-of-file-fixer
+      - id: trailing-whitespace
+        args: [--markdown-linebreak-ext=md]
+      - id: check-yaml
+      - id: check-toml
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: [--maxkb=1024]
+
+  # ---------------------------------------------------------------------
+  # 2. Ruff: lint + format
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.8.4
+    hooks:
+      - id: ruff
+        args: [--fix, --exit-non-zero-on-fix]
+      - id: ruff-format
+
+  # ---------------------------------------------------------------------
+  # 3. Mypy strict type checking (src/zubot_ingestion only)
+  # ---------------------------------------------------------------------
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        name: mypy (strict, src/zubot_ingestion)
+        files: ^src/zubot_ingestion/
+        args:
+          - --config-file=pyproject.toml
+        additional_dependencies:
+          - pydantic>=2.10.0
+          - pydantic-settings>=2.6.0
+          - sqlalchemy>=2.0.0
+          - types-redis
+          - types-requests
+
+  # ---------------------------------------------------------------------
+  # 4. import-linter: enforce layered architecture (boundary contracts)
+  # ---------------------------------------------------------------------
+  - repo: local
+    hooks:
+      - id: lint-imports
+        name: lint-imports (architectural boundaries)
+        entry: lint-imports --config .importlinter
+        language: system
+        types: [python]
+        pass_filenames: false
+        always_run: true
