@@ -43,6 +43,7 @@ from zubot_ingestion.domain.protocols import (
 from zubot_ingestion.shared.types import (
     AuthContext,
     BatchId,
+    BatchProgress,
     BatchSubmissionResult,
     BatchWithJobs,
     FileHash,
@@ -90,6 +91,14 @@ class OversizeFileError(ValueError):
     """
 
 
+class NotFoundError(LookupError):
+    """Raised when a requested batch or job does not exist.
+
+    Translated into an HTTP 404 response at the API boundary by the
+    batches and jobs route handlers.
+    """
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -124,6 +133,74 @@ def _now() -> datetime:
 def _build_poll_url(batch_id: UUID) -> str:
     """Return the GET URL for polling a batch's status."""
     return f"/batches/{batch_id}"
+
+
+def _compute_progress(job_statuses: list[JobStatus]) -> BatchProgress:
+    """Tally a list of job statuses into a :class:`BatchProgress`.
+
+    Counts five disjoint buckets — completed, queued, failed,
+    in_progress, and total — using straight equality comparison so the
+    counts are independent of any ordering. ``CACHED`` jobs (dedup hits
+    that already have a completed result) are folded into the
+    ``completed`` bucket so the progress reflects the user-visible
+    "this work is done" semantics rather than the internal status code.
+    """
+    completed = sum(
+        1
+        for s in job_statuses
+        if s == JobStatus.COMPLETED or s == JobStatus.CACHED
+    )
+    queued = sum(1 for s in job_statuses if s == JobStatus.QUEUED)
+    failed = sum(1 for s in job_statuses if s == JobStatus.FAILED)
+    in_progress = sum(1 for s in job_statuses if s == JobStatus.PROCESSING)
+    return BatchProgress(
+        completed=completed,
+        queued=queued,
+        failed=failed,
+        in_progress=in_progress,
+        total=len(job_statuses),
+    )
+
+
+def _aggregate_batch_status(job_statuses: list[JobStatus]) -> JobStatus:
+    """Derive the batch-level status from its child job statuses.
+
+    Rules (priority order, matching the CAP-010 spec):
+
+    * empty batch (no jobs)              -> ``QUEUED``
+    * any job in PROCESSING              -> ``PROCESSING`` (in_progress)
+    * any job in QUEUED (and none in PROCESSING) -> ``PROCESSING``
+        if there are also completed/failed jobs (mixed = still working),
+        else ``QUEUED`` if every job is queued
+    * any job FAILED, none PROCESSING/QUEUED -> ``FAILED``
+    * all jobs in COMPLETED              -> ``COMPLETED``
+    * mixed completed + cached + failed terminal states with no in-flight
+      jobs -> ``FAILED`` if any failed else ``COMPLETED``
+    """
+    if not job_statuses:
+        return JobStatus.QUEUED
+
+    has_processing = any(s == JobStatus.PROCESSING for s in job_statuses)
+    has_queued = any(s == JobStatus.QUEUED for s in job_statuses)
+    has_failed = any(s == JobStatus.FAILED for s in job_statuses)
+    all_queued = all(s == JobStatus.QUEUED for s in job_statuses)
+    all_done = all(
+        s == JobStatus.COMPLETED or s == JobStatus.CACHED for s in job_statuses
+    )
+
+    if has_processing:
+        return JobStatus.PROCESSING
+    if all_queued:
+        return JobStatus.QUEUED
+    if has_queued:
+        # mixed queued + completed/failed -> still working
+        return JobStatus.PROCESSING
+    if has_failed:
+        return JobStatus.FAILED
+    if all_done:
+        return JobStatus.COMPLETED
+    # Fallback for unexpected combinations (REVIEW, REJECTED, etc.).
+    return JobStatus.PROCESSING
 
 
 # ---------------------------------------------------------------------------
@@ -269,45 +346,82 @@ class JobService:
         )
 
     # ------------------------------------------------------------------
-    # IJobService.get_batch
+    # IJobService.get_batch (CAP-010)
     # ------------------------------------------------------------------
 
     async def get_batch(
         self,
         batch_id: UUID,
         auth_context: AuthContext,
-    ) -> BatchWithJobs | None:
+    ) -> BatchWithJobs:
         """Return a :class:`BatchWithJobs` DTO for the given batch.
 
-        Delegates straight to the repository; the repository adapter is
-        responsible for shaping the DTO (progress counters, job
-        summaries, etc.).
+        Fetches the batch + all child jobs via the repository, then
+        recomputes the progress counters and the aggregated batch status
+        from the child job statuses (overriding whatever the persisted
+        Batch.status column happens to say). This makes the GET endpoint
+        a single source of truth: clients always see a status that is
+        consistent with the underlying job rows.
+
+        Status determination rules (in priority order):
+            * empty batch (no jobs)         -> ``QUEUED``
+            * any job in PROCESSING         -> ``PROCESSING``
+            * any job FAILED, none PROCESSING -> ``FAILED``
+            * all jobs in QUEUED            -> ``QUEUED``
+            * all jobs in COMPLETED         -> ``COMPLETED``
+            * mixed terminal states         -> ``COMPLETED``
+
+        Args:
+            batch_id: UUID of the batch to fetch.
+            auth_context: Authenticated caller (passed through; reserved
+                for later authorisation checks).
+
+        Returns:
+            A :class:`BatchWithJobs` with refreshed progress counters
+            and status.
+
+        Raises:
+            NotFoundError: If no batch row exists for ``batch_id``. The
+                API layer translates this into an HTTP 404 response.
         """
-        # The canonical protocol types get_batch_with_jobs as
-        # ``tuple[Batch, list[Job]] | None`` but our repository adapter
-        # returns the richer BatchWithJobs DTO directly. Both shapes are
-        # handled here so the service remains adapter-agnostic.
+        # The repository may return either the canonical
+        # ``tuple[Batch, list[Job]] | None`` shape from the protocol or
+        # the richer ``BatchWithJobs | None`` DTO that the SQLAlchemy
+        # adapter actually emits. Handle both so the service is
+        # adapter-agnostic.
         result = await self._repository.get_batch_with_jobs(batch_id)  # type: ignore[func-returns-value]
         if result is None:
-            return None
-        if isinstance(result, BatchWithJobs):
-            return result
-        # Fallback: adapter returned the canonical tuple shape.
-        batch, jobs = result  # type: ignore[misc]
-        from zubot_ingestion.shared.types import BatchProgress
+            raise NotFoundError(f"Batch {batch_id} not found")
 
-        completed = sum(1 for j in jobs if j.status == JobStatus.COMPLETED)
-        queued = sum(1 for j in jobs if j.status == JobStatus.QUEUED)
-        failed = sum(1 for j in jobs if j.status == JobStatus.FAILED)
+        if isinstance(result, BatchWithJobs):
+            # The adapter already shaped the DTO; pull the existing job
+            # summaries so we can recompute progress + status from them.
+            existing = result
+            job_summaries = list(existing.jobs)
+            job_statuses = [j.status for j in job_summaries]
+            progress = _compute_progress(job_statuses)
+            aggregated_status = _aggregate_batch_status(job_statuses)
+            return BatchWithJobs(
+                batch_id=existing.batch_id,
+                status=aggregated_status,
+                progress=progress,
+                jobs=job_summaries,
+                callback_url=existing.callback_url,
+                deployment_id=existing.deployment_id,
+                node_id=existing.node_id,
+                created_at=existing.created_at,
+                updated_at=existing.updated_at,
+            )
+
+        # Canonical tuple shape from the protocol.
+        batch, jobs = result  # type: ignore[misc]
+        job_statuses = [j.status for j in jobs]
+        progress = _compute_progress(job_statuses)
+        aggregated_status = _aggregate_batch_status(job_statuses)
         return BatchWithJobs(
             batch_id=batch.batch_id,
-            status=batch.status,
-            progress=BatchProgress(
-                completed=completed,
-                queued=queued,
-                failed=failed,
-                total=len(jobs),
-            ),
+            status=aggregated_status,
+            progress=progress,
             jobs=[
                 JobSummary(
                     job_id=j.job_id,
@@ -326,18 +440,36 @@ class JobService:
         )
 
     # ------------------------------------------------------------------
-    # IJobService.get_job
+    # IJobService.get_job (CAP-011)
     # ------------------------------------------------------------------
 
     async def get_job(
         self,
         job_id: UUID,
         auth_context: AuthContext,
-    ) -> JobDetail | None:
-        """Return a :class:`JobDetail` for the given job id, or ``None``."""
+    ) -> JobDetail:
+        """Return a full :class:`JobDetail` for the given job id.
+
+        The returned DTO carries the persisted ``result``,
+        ``pipeline_trace``, ``otel_trace_id``, and ``processing_time_ms``
+        fields so callers can reconstruct the full extraction trace
+        without an extra round trip.
+
+        Args:
+            job_id: UUID of the job to fetch.
+            auth_context: Authenticated caller (passed through; reserved
+                for later authorisation checks).
+
+        Returns:
+            :class:`JobDetail` with all persisted fields populated.
+
+        Raises:
+            NotFoundError: If no job row exists for ``job_id``. The API
+                layer translates this into an HTTP 404 response.
+        """
         job = await self._repository.get_job(job_id)
         if job is None:
-            return None
+            raise NotFoundError(f"Job {job_id} not found")
         return JobDetail(
             job_id=job.job_id,
             batch_id=job.batch_id,
@@ -386,5 +518,6 @@ __all__ = [
     "InvalidPDFError",
     "JobService",
     "MAX_PDF_BYTES",
+    "NotFoundError",
     "OversizeFileError",
 ]

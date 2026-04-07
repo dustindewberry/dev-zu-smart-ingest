@@ -24,7 +24,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import AuthMiddleware
+from zubot_ingestion.api.routes import batches as batches_routes
 from zubot_ingestion.api.routes import extract as extract_routes
+from zubot_ingestion.api.routes import jobs as jobs_routes
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 logger = logging.getLogger(SERVICE_NAME)
@@ -117,9 +119,14 @@ def create_app() -> FastAPI:
     # registered alongside the routes that raise them in later steps.
     app.add_exception_handler(Exception, _unhandled_exception_handler)
 
-    # Routers — CAP-009 (POST /extract). Future steps mount additional
-    # routers (health, batches, jobs, review, metrics) here.
+    # Routers
+    # - CAP-009 (POST /extract)
+    # - CAP-010 (GET /batches/{batch_id})
+    # - CAP-011 (GET /jobs/{job_id})
+    # Future steps mount additional routers (health, review, metrics) here.
     app.include_router(extract_routes.router)
+    app.include_router(batches_routes.router)
+    app.include_router(jobs_routes.router)
 
     return app
 
