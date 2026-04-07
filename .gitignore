@@ -29,6 +29,7 @@ env/
 
 # Environment files
 .env
+.env.local
 
 # Editors
 .idea/
