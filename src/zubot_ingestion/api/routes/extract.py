@@ -20,6 +20,9 @@ Concrete adapter wiring (repository, task queue, PDF processor) is
 performed by the :func:`get_job_service` FastAPI dependency factory at
 the bottom of this module. Tests can override it via
 ``app.dependency_overrides`` to inject a fake service.
+
+Per CAP-030, this expensive write endpoint is rate-limited to 20/minute
+via the ``@limiter.limit("20/minute")`` decorator.
 """
 
 from __future__ import annotations
@@ -39,6 +42,7 @@ from fastapi import (
 from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import get_auth_context
+from zubot_ingestion.api.middleware.rate_limit import limiter
 from zubot_ingestion.domain.enums import ExtractionMode
 from zubot_ingestion.domain.protocols import IJobService
 from zubot_ingestion.services.job_service import (
@@ -189,7 +193,9 @@ async def get_job_service(request: Request) -> IJobService:
     summary="Submit a batch of PDFs for extraction",
     response_description="Batch queued for extraction",
 )
+@limiter.limit("20/minute")
 async def submit_extract_batch(
+    request: Request,  # noqa: ARG001 — required by slowapi for rate-limit key resolution
     files: list[UploadFile] = File(..., description="One or more PDF files to extract"),
     mode: str = Form("auto", description="Extraction mode: auto | drawing | title"),
     callback_url: str | None = Form(None, description="Optional webhook URL"),

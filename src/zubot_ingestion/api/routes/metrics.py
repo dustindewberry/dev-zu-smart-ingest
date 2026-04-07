@@ -15,12 +15,17 @@ The handler is a thin wrapper around
 serialising the registry — every counter increment, histogram
 observation, and gauge update happens elsewhere in the codebase
 (orchestrator, ollama client, health endpoint).
+
+CAP-030 integration: this route is exempt from rate limiting via
+``@limiter.exempt`` so Prometheus scrapes are never throttled and
+historical metric continuity is preserved.
 """
 
 from __future__ import annotations
 
 from fastapi import APIRouter, Response
 
+from zubot_ingestion.api.middleware.rate_limit import limiter
 from zubot_ingestion.infrastructure.metrics.prometheus import (
     CONTENT_TYPE_LATEST,
     generate_latest,
@@ -32,8 +37,13 @@ router = APIRouter()
 
 
 @router.get("/metrics")
+@limiter.exempt
 async def metrics_endpoint() -> Response:
-    """Return the Prometheus text-format snapshot of all registered metrics."""
+    """Return the Prometheus text-format snapshot of all registered metrics.
+
+    This route is exempt from rate limiting (CAP-030) so Prometheus can
+    scrape it on a fixed cadence without producing scrape gaps.
+    """
     return Response(
         content=generate_latest(),
         media_type=CONTENT_TYPE_LATEST,

@@ -5,6 +5,7 @@ middleware and routers produced by sibling steps:
 
 * CORS middleware (open in development; locked down later via config)
 * Authentication middleware (CAP-026; enforces API key / WOD JWT)
+* Rate limiting middleware (CAP-030; slowapi + Redis)
 * A lifespan context manager that logs startup / shutdown
 * Placeholder global exception handlers (concrete custom exception classes
   will be registered here as later steps add domain-specific errors)
@@ -26,11 +27,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import AuthMiddleware
+from zubot_ingestion.api.middleware.rate_limit import (
+    RateLimitExceeded,
+    SlowAPIMiddleware,
+    custom_429_handler,
+    limiter,
+)
 from zubot_ingestion.api.routes import batches as batches_routes
 from zubot_ingestion.api.routes import extract as extract_routes
 from zubot_ingestion.api.routes import health as health_routes
 from zubot_ingestion.api.routes import jobs as jobs_routes
 from zubot_ingestion.api.routes import metrics as metrics_routes
+from zubot_ingestion.api.routes import review as review_routes
 from zubot_ingestion.config import get_settings
 from zubot_ingestion.infrastructure.otel.instrumentation import setup_otel
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
@@ -130,6 +138,15 @@ def create_app() -> FastAPI:
     # by CORSMiddleware before AuthMiddleware sees them.
     app.add_middleware(AuthMiddleware)
 
+    # ------------------------------------------------------------------ #
+    # Rate limiting (CAP-030) — slowapi + Redis. Must be added AFTER
+    # AuthMiddleware so the rate-limit key function can observe
+    # ``request.state.auth_context``.
+    # ------------------------------------------------------------------ #
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, custom_429_handler)
+    app.add_middleware(SlowAPIMiddleware)
+
     # Placeholder exception handler. Specific custom exceptions will be
     # registered alongside the routes that raise them in later steps.
     app.add_exception_handler(Exception, _unhandled_exception_handler)
@@ -140,10 +157,11 @@ def create_app() -> FastAPI:
     # - CAP-011 (GET /jobs/{job_id})
     # - CAP-003 (GET /health) — step-13 (keen-hare)
     # - CAP-028 (GET /metrics) — step-23 (witty-atlas)
-    # Future steps mount additional routers (review) here.
+    # - CAP-030 (POST /review/...) — step-24 (sharp-spark)
     app.include_router(extract_routes.router)
     app.include_router(batches_routes.router)
     app.include_router(jobs_routes.router)
+    app.include_router(review_routes.router)
     app.include_router(health_routes.router)
     app.include_router(metrics_routes.router)
 

@@ -68,8 +68,11 @@ class Settings(BaseSettings):
     TEST_PDF_DIR: str | None = None  # absolute path used by integration tests
 
     # ------------------------------------------------------------------ #
-    # Rate limiting                                                      #
+    # Rate limiting (CAP-030)                                            #
     # ------------------------------------------------------------------ #
+    # Global default applied to every endpoint that does not declare its
+    # own ``@limiter.limit(...)`` decorator. Per-endpoint limits override
+    # this value (e.g. POST /extract uses 20/minute).
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
     model_config = SettingsConfigDict(

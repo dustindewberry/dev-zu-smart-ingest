@@ -16,6 +16,9 @@ shared :func:`get_auth_context` and :func:`get_job_service` dependencies
 from sibling modules so the test suite can override them via
 ``app.dependency_overrides`` exactly the same way it does for
 ``POST /extract``.
+
+Per CAP-030, this read endpoint is rate-limited to 100/minute via the
+``@limiter.limit("100/minute")`` decorator.
 """
 
 from __future__ import annotations
@@ -23,9 +26,10 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from zubot_ingestion.api.middleware.auth import get_auth_context
+from zubot_ingestion.api.middleware.rate_limit import limiter
 from zubot_ingestion.api.routes.extract import get_job_service
 from zubot_ingestion.domain.protocols import IJobService
 from zubot_ingestion.services.job_service import NotFoundError
@@ -78,7 +82,9 @@ def _serialize_job(job: JobDetail) -> dict[str, Any]:
     summary="Get a single job by id",
     response_description="Full job detail with extraction result and trace",
 )
+@limiter.limit("100/minute")
 async def get_job_endpoint(
+    request: Request,  # noqa: ARG001 — required by slowapi for rate-limit key resolution
     job_id: str,
     auth_context: AuthContext = Depends(get_auth_context),
     service: IJobService = Depends(get_job_service),

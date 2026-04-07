@@ -41,6 +41,10 @@ result via :func:`update_queue_depth_gauge`. Updating the gauge from
 the health endpoint piggybacks on the Celery RPC the probe already
 issues — no additional broker traffic is required, and Prometheus
 scrapes (~15 s) provide the right cadence to keep the gauge fresh.
+
+CAP-030 integration: this route is exempt from rate limiting via
+``@limiter.exempt`` so Kubernetes liveness/readiness probes are never
+throttled.
 """
 
 from __future__ import annotations
@@ -51,6 +55,7 @@ from typing import Any, Awaitable, Callable
 
 from fastapi import APIRouter, Response, status
 
+from zubot_ingestion.api.middleware.rate_limit import limiter
 from zubot_ingestion.config import get_settings
 from zubot_ingestion.infrastructure.metrics.prometheus import queue_depth
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
@@ -304,6 +309,7 @@ def _aggregate_status(deps: dict[str, dict[str, Any]]) -> str:
 
 
 @router.get("/health")
+@limiter.exempt
 async def health_check(response: Response) -> dict[str, Any]:
     """Aggregate liveness probe across every external dependency.
 
@@ -311,6 +317,10 @@ async def health_check(response: Response) -> dict[str, Any]:
     ``unhealthy``. The body always conforms to the schema in the module
     docstring, even on failure, so monitoring systems can parse it
     unconditionally.
+
+    This route is exempt from rate limiting (CAP-030) so it can be
+    polled by Kubernetes liveness/readiness probes on a fixed cadence
+    without being throttled.
     """
     probes: list[tuple[str, DependencyProbe]] = [
         ("postgres", _probe_postgres),
