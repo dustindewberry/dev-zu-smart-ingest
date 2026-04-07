@@ -198,12 +198,19 @@ class JobDetail:
 
 @dataclass(frozen=True)
 class BatchProgress:
-    """Progress counters for a batch."""
+    """Progress counters for a batch.
+
+    The ``in_progress`` field counts jobs currently being processed by a
+    worker (status == ``PROCESSING``). It is given a default of 0 so that
+    legacy callers that construct ``BatchProgress`` without the field
+    keep working.
+    """
 
     completed: int
     queued: int
     failed: int
     total: int
+    in_progress: int = 0
 
 
 @dataclass(frozen=True)
