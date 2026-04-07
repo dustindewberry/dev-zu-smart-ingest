@@ -215,10 +215,11 @@ def extract_document_task(self, job_id: str) -> dict:  # type: ignore[no-untyped
         :meth:`ITaskQueue.get_task_status` can read the high-level outcome
         without re-querying the repository.
     """
-    # Lazy imports keep this module's import-time graph free of any
+    # Lazy import keeps this module's import-time graph free of any
     # infrastructure modules. The factory below performs the actual
-    # adapter construction.
-    from zubot_ingestion.services import build_orchestrator, get_job_repository
+    # adapter construction (build_orchestrator is imported inside the
+    # async body that actually uses it).
+    from zubot_ingestion.services import get_job_repository
 
     parsed_job_id = UUID(job_id)
 

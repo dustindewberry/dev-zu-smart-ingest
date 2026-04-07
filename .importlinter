@@ -2,18 +2,16 @@
 root_package = zubot_ingestion
 
 [importlinter:contract:layers]
-name = Layered architecture
+name = Layered architecture (hexagonal: api > services > infrastructure > domain)
 type = layers
 layers =
     zubot_ingestion.api
     zubot_ingestion.services
-    zubot_ingestion.domain
     zubot_ingestion.infrastructure
-ignore_imports =
-    zubot_ingestion.api.app -> zubot_ingestion.infrastructure.*
+    zubot_ingestion.domain
 
 [importlinter:contract:forbidden-domain]
-name = Domain cannot import infrastructure or api
+name = Domain cannot import infrastructure or api or services
 type = forbidden
 source_modules =
     zubot_ingestion.domain
@@ -23,10 +21,35 @@ forbidden_modules =
     zubot_ingestion.services
 
 [importlinter:contract:forbidden-api-pipeline]
-name = API cannot import domain.pipeline internals
+name = API cannot import domain.pipeline internals or infrastructure (except DI composition root)
 type = forbidden
 source_modules =
     zubot_ingestion.api
 forbidden_modules =
     zubot_ingestion.domain.pipeline
     zubot_ingestion.infrastructure
+ignore_imports =
+    zubot_ingestion.api.app -> zubot_ingestion.infrastructure.logging.config
+    zubot_ingestion.api.app -> zubot_ingestion.infrastructure.otel.instrumentation
+    zubot_ingestion.api.middleware.logging -> zubot_ingestion.infrastructure.logging.config
+    zubot_ingestion.api.routes.extract -> zubot_ingestion.infrastructure.database.repository
+    zubot_ingestion.api.routes.extract -> zubot_ingestion.infrastructure.database.session
+    zubot_ingestion.api.routes.extract -> zubot_ingestion.infrastructure.pdf.processor
+    zubot_ingestion.api.routes.health -> zubot_ingestion.infrastructure.metrics.prometheus
+    zubot_ingestion.api.routes.health -> zubot_ingestion.services.celery_app
+    zubot_ingestion.api.routes.metrics -> zubot_ingestion.infrastructure.metrics.prometheus
+    zubot_ingestion.services.celery_app -> zubot_ingestion.infrastructure.logging.config
+    zubot_ingestion.services -> zubot_ingestion.infrastructure.chromadb.writer
+    zubot_ingestion.services -> zubot_ingestion.infrastructure.ollama.client
+    zubot_ingestion.services -> zubot_ingestion.infrastructure.pdf.processor
+    zubot_ingestion.services -> zubot_ingestion.infrastructure.database.repository
+    zubot_ingestion.services.orchestrator -> zubot_ingestion.infrastructure.otel.instrumentation
+    zubot_ingestion.services.orchestrator -> zubot_ingestion.infrastructure.metrics.prometheus
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.json_parser
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.companion
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.confidence
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.sidecar
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.extractors.document_type
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.extractors.drawing_number
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.extractors.filename_parser
+    zubot_ingestion.services -> zubot_ingestion.domain.pipeline.extractors.title

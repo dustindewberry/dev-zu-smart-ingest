@@ -288,6 +288,9 @@ class IOrchestrator(Protocol):
         self,
         job: Job,
         pdf_bytes: bytes,
+        *,
+        deployment_id: int | None = None,
+        node_id: int | None = None,
     ) -> PipelineResult:
         """Execute the complete extraction pipeline.
 
@@ -302,6 +305,10 @@ class IOrchestrator(Protocol):
         Args:
             job: Job entity with metadata
             pdf_bytes: Raw PDF file bytes
+            deployment_id: Optional Zutec deployment ID forwarded to the
+                metadata writer for ChromaDB collection routing.
+            node_id: Optional Zutec node ID forwarded to the metadata
+                writer alongside ``deployment_id``.
 
         Returns:
             PipelineResult with extraction_result, companion_text, sidecar,
@@ -727,14 +734,14 @@ class IJobRepository(Protocol):
     async def get_batch_with_jobs(
         self,
         batch_id: UUID,
-    ) -> tuple[Batch, list[Job]] | None:
+    ) -> BatchWithJobs | None:
         """Retrieve batch with all associated jobs.
 
         Args:
             batch_id: UUID of the batch
 
         Returns:
-            Tuple of (Batch, list[Job]) if found, None otherwise
+            BatchWithJobs DTO if found, None otherwise
         """
         ...
 
