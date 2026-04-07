@@ -32,6 +32,11 @@ only from :mod:`zubot_ingestion.config`, :mod:`zubot_ingestion.shared`, and
 :mod:`zubot_ingestion.domain`. Infrastructure adapters are constructed
 inside the factory function in :mod:`zubot_ingestion.services.__init__`,
 never imported here directly.
+
+Structured logging (CAP-029): the worker_process_init signal configures
+structlog inside each Celery worker process; task_prerun / task_postrun /
+task_failure bind and clear job context on contextvars so every log line
+emitted while a task runs inherits ``job_id`` / ``batch_id`` / ``file_hash``.
 """
 
 from __future__ import annotations
@@ -43,9 +48,21 @@ from typing import Any
 from uuid import UUID
 
 from celery import Celery
+from celery.signals import (
+    task_failure,
+    task_postrun,
+    task_prerun,
+    worker_process_init,
+)
 
 from zubot_ingestion.config import get_settings
 from zubot_ingestion.domain.enums import JobStatus
+from zubot_ingestion.infrastructure.logging.config import (
+    bind_job_context,
+    clear_context,
+    get_logger,
+    setup_logging,
+)
 from zubot_ingestion.shared.constants import (
     CELERY_BROKER_DB,
     CELERY_QUEUE_DEFAULT,
@@ -54,6 +71,7 @@ from zubot_ingestion.shared.constants import (
 )
 
 _LOG = logging.getLogger(__name__)
+_struct_logger = get_logger(__name__)
 
 #: Root directory for temporary PDF storage written by the API on submit.
 TEMP_PDF_ROOT: Path = Path("/tmp/zubot-ingestion")
@@ -95,6 +113,85 @@ app.conf.update(
     task_default_retry_delay=2,
     task_max_retries=3,
 )
+
+
+# ---------------------------------------------------------------------------
+# Structured-logging signal hooks (CAP-029)
+# ---------------------------------------------------------------------------
+
+
+@worker_process_init.connect
+def _init_worker_logging(**_kwargs: Any) -> None:
+    """Configure structured logging in each Celery worker process."""
+    settings = get_settings()
+    setup_logging(log_level=settings.LOG_LEVEL, log_dir=settings.LOG_DIR)
+
+
+def _extract_job_context(kwargs: dict[str, Any] | None) -> dict[str, str | None]:
+    """Pull job_id / batch_id / file_hash out of a Celery task kwargs dict."""
+    kwargs = kwargs or {}
+    return {
+        "job_id": kwargs.get("job_id"),
+        "batch_id": kwargs.get("batch_id"),
+        "file_hash": kwargs.get("file_hash"),
+    }
+
+
+@task_prerun.connect
+def _on_task_prerun(
+    task_id: str | None = None,
+    task: Any = None,
+    args: tuple[Any, ...] | None = None,
+    kwargs: dict[str, Any] | None = None,
+    **_extra: Any,
+) -> None:
+    """Bind job context (and the celery task_id) before a task runs."""
+    ctx = _extract_job_context(kwargs)
+    job_id = ctx["job_id"] or task_id or "unknown"
+    bind_job_context(
+        job_id=str(job_id),
+        batch_id=ctx["batch_id"],
+        file_hash=ctx["file_hash"],
+    )
+    _struct_logger.info(
+        "celery.task.start",
+        task_name=getattr(task, "name", None),
+        celery_task_id=task_id,
+    )
+
+
+@task_postrun.connect
+def _on_task_postrun(
+    task_id: str | None = None,
+    task: Any = None,
+    state: str | None = None,
+    **_extra: Any,
+) -> None:
+    """Log completion and clear bound job context."""
+    _struct_logger.info(
+        "celery.task.end",
+        task_name=getattr(task, "name", None),
+        celery_task_id=task_id,
+        state=state,
+    )
+    clear_context()
+
+
+@task_failure.connect
+def _on_task_failure(
+    task_id: str | None = None,
+    exception: BaseException | None = None,
+    einfo: Any = None,
+    **_extra: Any,
+) -> None:
+    """Log task failures via structlog (context is still bound here)."""
+    _struct_logger.error(
+        "celery.task.failure",
+        celery_task_id=task_id,
+        error_type=type(exception).__name__ if exception else None,
+        error_message=str(exception) if exception else None,
+        traceback=str(einfo) if einfo else None,
+    )
 
 
 @app.task(

@@ -207,6 +207,28 @@ AUTH_EXEMPT_PATHS: frozenset[str] = frozenset(
 )
 
 
+# ---------------------------------------------------------------------------
+# Structured logging — sensitive value scrubber (CAP-029)
+# ---------------------------------------------------------------------------
+
+# Sensitive key fragments that the structured-logging scrubber must redact.
+# Any log field whose key contains one of these (case-insensitive) is replaced
+# with the REDACTION_PLACEHOLDER value below.
+SENSITIVE_KEY_FRAGMENTS: tuple[str, ...] = (
+    "api_key",
+    "apikey",
+    "jwt",
+    "token",
+    "password",
+    "secret",
+    "file_bytes",
+    "file_contents",
+    "authorization",
+)
+
+REDACTION_PLACEHOLDER: str = "***REDACTED***"
+
+
 __all__ = [
     # Service identifiers
     "SERVICE_NAME",
@@ -271,4 +293,7 @@ __all__ = [
     "OLLAMA_TEMPERATURE_DETERMINISTIC",
     # Auth
     "AUTH_EXEMPT_PATHS",
+    # Structured logging (CAP-029)
+    "SENSITIVE_KEY_FRAGMENTS",
+    "REDACTION_PLACEHOLDER",
 ]

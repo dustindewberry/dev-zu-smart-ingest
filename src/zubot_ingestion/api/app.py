@@ -6,7 +6,9 @@ middleware and routers produced by sibling steps:
 * CORS middleware (open in development; locked down later via config)
 * Authentication middleware (CAP-026; enforces API key / WOD JWT)
 * Rate limiting middleware (CAP-030; slowapi + Redis)
-* A lifespan context manager that logs startup / shutdown
+* Request logging middleware (CAP-029; structured JSON via structlog)
+* A lifespan context manager that configures structured logging on
+  startup and logs startup / shutdown
 * Placeholder global exception handlers (concrete custom exception classes
   will be registered here as later steps add domain-specific errors)
 * OpenAPI metadata sourced from ``zubot_ingestion.shared.constants``
@@ -17,7 +19,6 @@ middleware and routers produced by sibling steps:
 
 from __future__ import annotations
 
-import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
@@ -27,6 +28,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import AuthMiddleware
+from zubot_ingestion.api.middleware.logging import RequestLoggingMiddleware
 from zubot_ingestion.api.middleware.rate_limit import (
     RateLimitExceeded,
     SlowAPIMiddleware,
@@ -40,35 +42,44 @@ from zubot_ingestion.api.routes import jobs as jobs_routes
 from zubot_ingestion.api.routes import metrics as metrics_routes
 from zubot_ingestion.api.routes import review as review_routes
 from zubot_ingestion.config import get_settings
+from zubot_ingestion.infrastructure.logging.config import (
+    get_logger,
+    setup_logging,
+)
 from zubot_ingestion.infrastructure.otel.instrumentation import setup_otel
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 if TYPE_CHECKING:  # pragma: no cover - import only for type-checkers
     pass
 
-logger = logging.getLogger(SERVICE_NAME)
+logger = get_logger(SERVICE_NAME)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Application lifespan: startup before ``yield``, shutdown after.
 
-    Initializes OTEL tracing on startup and logs the transitions. Later
-    steps will attach concrete resource handles (database engine, Redis
-    pool, Ollama HTTP client) to ``app.state`` here.
+    Configures structured logging (CAP-029) and initializes OTEL tracing
+    on startup, then logs the transitions. Later steps will attach
+    concrete resource handles (database engine, Redis pool, Ollama HTTP
+    client) to ``app.state`` here.
     """
     settings = get_settings()
+    setup_logging(log_level=settings.LOG_LEVEL, log_dir=settings.LOG_DIR)
     setup_otel(otlp_endpoint=settings.OTEL_EXPORTER_OTLP_ENDPOINT)
     logger.info(
         "service.startup",
-        extra={"service": SERVICE_NAME, "version": SERVICE_VERSION},
+        service=SERVICE_NAME,
+        version=SERVICE_VERSION,
+        log_level=settings.LOG_LEVEL,
     )
     try:
         yield
     finally:
         logger.info(
             "service.shutdown",
-            extra={"service": SERVICE_NAME, "version": SERVICE_VERSION},
+            service=SERVICE_NAME,
+            version=SERVICE_VERSION,
         )
 
 
@@ -80,14 +91,16 @@ async def _unhandled_exception_handler(
 
     Custom domain exceptions defined by later steps should register their
     own, more specific handlers; this exists so unanticipated errors never
-    leak a stack trace to the client.
+    leak a stack trace to the client. Logs via structlog so the unhandled
+    error inherits whatever request_id the RequestLoggingMiddleware bound
+    for this request.
     """
     logger.exception(
         "unhandled_exception",
-        extra={
-            "path": request.url.path,
-            "method": request.method,
-        },
+        path=request.url.path,
+        method=request.method,
+        error_type=type(exc).__name__,
+        error_message=str(exc),
     )
     return JSONResponse(
         status_code=500,
@@ -137,6 +150,12 @@ def create_app() -> FastAPI:
     # registered AFTER CORS so that pre-flight OPTIONS requests are handled
     # by CORSMiddleware before AuthMiddleware sees them.
     app.add_middleware(AuthMiddleware)
+
+    # Request logging (CAP-029) — bind a request_id, log start/end, and
+    # clear context on completion. Registered after AuthMiddleware so the
+    # bound request context can observe ``request.state.user_id`` if auth
+    # populated it.
+    app.add_middleware(RequestLoggingMiddleware)
 
     # ------------------------------------------------------------------ #
     # Rate limiting (CAP-030) — slowapi + Redis. Must be added AFTER
