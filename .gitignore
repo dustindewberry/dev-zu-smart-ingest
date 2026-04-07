@@ -18,10 +18,16 @@ htmlcov/
 .mypy_cache/
 .dmypy.json
 
+# ruff
+.ruff_cache/
+
 # Virtual environments
 .venv/
 venv/
 env/
+
+# Environment files
+.env
 
 # Editors
 .idea/

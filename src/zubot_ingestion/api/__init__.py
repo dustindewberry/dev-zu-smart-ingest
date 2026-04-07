@@ -1,4 +1,4 @@
-"""Presentation layer.
+"""Presentation layer (FastAPI) for the Zubot Ingestion Service.
 
 FastAPI application, routes, and HTTP-level middleware. This layer
 depends on services (application layer) for business logic and is
