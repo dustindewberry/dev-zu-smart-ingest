@@ -1,0 +1,57 @@
+# Zubot Ingestion — runtime dependencies
+# Install with: pip install -r requirements.txt
+# Pinned to minimum-supported versions; see pyproject.toml for canonical metadata.
+
+# --- Web framework & ASGI server ---
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# --- Background workers ---
+celery>=5.4.0
+redis>=5.0.0
+
+# --- Database ---
+asyncpg>=0.30.0
+sqlalchemy>=2.0.0
+alembic>=1.14.0
+
+# --- PDF processing ---
+pymupdf>=1.25.0
+
+# --- HTTP client ---
+httpx>=0.28.0
+
+# --- Configuration & validation ---
+pydantic>=2.10.0
+pydantic-settings>=2.6.0
+
+# --- Vector + search ---
+chromadb>=0.5.0
+elasticsearch>=8.13.0
+
+# --- Observability ---
+opentelemetry-api>=1.25.0
+opentelemetry-sdk>=1.25.0
+opentelemetry-exporter-otlp>=1.25.0
+opentelemetry-instrumentation-fastapi>=0.46b0
+opentelemetry-instrumentation-httpx>=0.46b0
+opentelemetry-instrumentation-asyncpg>=0.46b0
+opentelemetry-instrumentation-redis>=0.46b0
+opentelemetry-instrumentation-celery>=0.46b0
+prometheus-client>=0.21.0
+
+# --- Misc utilities ---
+json-repair>=0.30.0
+slowapi>=0.1.9
+structlog>=24.4.0
+pyjwt>=2.9.0
+python-multipart>=0.0.12
+
+# --- Test runner (kept here so containers can run tests without dev extras) ---
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+pytest-cov>=5.0.0
+
+# --- Type checking & architecture enforcement ---
+mypy>=1.13.0
+import-linter>=2.0
