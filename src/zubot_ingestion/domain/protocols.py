@@ -345,7 +345,22 @@ class IOllamaClient(Protocol):
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
     ) -> OllamaResponse:
-        """Generate response from vision model with image input."""
+        """Generate response from vision model with image input.
+
+        Args:
+            image_base64: Base64-encoded JPEG image
+            prompt: Instruction prompt for the model
+            model: Vision model name
+            temperature: Sampling temperature (0 for deterministic)
+            timeout_seconds: Request timeout
+
+        Returns:
+            OllamaResponse with response text and model metadata
+
+        Raises:
+            OllamaTimeoutError: If request exceeds timeout
+            OllamaUnavailableError: If model is not loaded or server is down
+        """
         ...
 
     async def generate_text(
@@ -356,7 +371,22 @@ class IOllamaClient(Protocol):
         temperature: float = 0.0,
         timeout_seconds: float = 30.0,
     ) -> OllamaResponse:
-        """Generate response from text model."""
+        """Generate response from text model.
+
+        Args:
+            text: Input text content
+            prompt: Instruction prompt for the model
+            model: Text model name
+            temperature: Sampling temperature
+            timeout_seconds: Request timeout
+
+        Returns:
+            OllamaResponse with response text and model metadata
+
+        Raises:
+            OllamaTimeoutError: If request exceeds timeout
+            OllamaUnavailableError: If model is not loaded
+        """
         ...
 
     async def check_model_available(self, model: str) -> bool:
