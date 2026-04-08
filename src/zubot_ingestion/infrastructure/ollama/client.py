@@ -8,13 +8,26 @@ injection from the composition root.
 
 Transport
 ---------
-All requests go to ``{base_url}/api/generate`` (POST, vision and text)
-or ``{base_url}/api/tags`` (GET, model-availability check) via
-``httpx.AsyncClient``. Retries are applied only on 503 and 429
-responses using a fixed exponential backoff of 1s / 2s / 4s across
-three total attempts. On persistent failure the client raises
-``OllamaError``, which callers translate into domain-specific errors
-(``OllamaTimeoutError`` / ``OllamaUnavailableError``) if needed.
+Vision requests go to ``{base_url}/api/generate`` (POST) and text
+requests go to ``{base_url}/api/chat`` (POST) with structured
+``messages=[{"role": "system", ...}, {"role": "user", ...}]`` turns so
+untrusted document text is isolated from the instruction prompt.
+Model-availability checks use ``{base_url}/api/tags`` (GET). All
+calls flow through ``httpx.AsyncClient``. Retries are applied only on
+503 and 429 responses using a fixed exponential backoff of 1s / 2s /
+4s across three total attempts. On persistent failure the client
+raises ``OllamaError``, which callers translate into domain-specific
+errors (``OllamaTimeoutError`` / ``OllamaUnavailableError``) if needed.
+
+Prompt-injection hardening
+--------------------------
+``generate_text`` passes the instruction and the untrusted document
+text as separate ``system`` / ``user`` turns over ``/api/chat`` AND
+defensively escapes closing fences (``` ``` ```) and closing
+XML-like tags (``</context>``, ``</system>``, ``</user>``) in the
+untrusted text via :func:`_escape_untrusted_text`, using a zero-width
+space to neutralize exact-match token sequences without altering
+the rendered output.
 
 Determinism
 -----------
@@ -44,9 +57,12 @@ import asyncio
 import logging
 import time
 from contextlib import contextmanager
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any
 
 import httpx
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 from zubot_ingestion.domain.entities import OllamaResponse
 from zubot_ingestion.domain.protocols import IOllamaClient
@@ -61,6 +77,33 @@ from zubot_ingestion.shared.constants import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Prompt-injection hardening helpers
+# ---------------------------------------------------------------------------
+
+
+def _escape_untrusted_text(text: str) -> str:
+    """Defensive escaping for user-controlled text passed to the LLM.
+
+    Even though /api/chat separates system and user turns, some models
+    concatenate message content internally. Neutralize closing fences,
+    closing XML-like tags, and obvious instruction-hijack phrases.
+
+    A zero-width space (``\u200b``) is inserted inside the escaped
+    sequences so the sanitized text renders identically to the
+    original but no longer matches exact token sequences that models
+    or downstream consumers might interpret as structural markers.
+    """
+    if not text:
+        return text
+    # Escape triple backticks and common closing tags.
+    sanitized = text.replace("```", "`\u200b``")
+    sanitized = sanitized.replace("</context>", "</\u200bcontext>")
+    sanitized = sanitized.replace("</system>", "</\u200bsystem>")
+    sanitized = sanitized.replace("</user>", "</\u200buser>")
+    return sanitized
 
 
 # ---------------------------------------------------------------------------
@@ -240,20 +283,37 @@ class OllamaClient(IOllamaClient):
     ) -> OllamaResponse:
         """POST a text-only prompt with embedded context to the text model.
 
-        The effective prompt sent to Ollama is the concatenation
-        ``f"{prompt}\\n\\nCONTEXT:\\n{text}"`` so the upstream model
-        receives the instruction first and the raw document text as
-        its attached context block.
+        Prompt-injection hardening (hybrid fix):
+            1. The call targets Ollama's ``/api/chat`` endpoint and
+               passes the instruction and the untrusted document text
+               as two distinct turns — ``prompt`` becomes the
+               ``system`` message and ``text`` becomes the ``user``
+               message. This gives models that honour turn boundaries
+               real structural separation.
+            2. As belt-and-suspenders defence against models that
+               concatenate message content internally, the untrusted
+               ``text`` is first passed through
+               :func:`_escape_untrusted_text` so exact-match closing
+               fences and closing XML-like tags are neutralized via
+               zero-width-space insertion.
+
+        The public signature is preserved: callers still pass
+        ``(text, prompt)`` and receive an ``OllamaResponse`` whose
+        ``response_text`` holds the assistant's reply.
         """
-        full_prompt = f"{prompt}\n\nCONTEXT:\n{text}"
+        safe_text = _escape_untrusted_text(text)
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": safe_text},
+        ]
         payload: dict[str, Any] = {
             "model": model,
-            "prompt": full_prompt,
+            "messages": messages,
             "format": "json",
             "stream": False,
             "options": {"temperature": temperature},
         }
-        return await self._post_generate(
+        return await self._post_chat(
             payload=payload,
             model=model,
             timeout_seconds=int(timeout_seconds),
@@ -460,6 +520,153 @@ class OllamaClient(IOllamaClient):
             raw=body,
         )
 
+    async def _post_chat(
+        self,
+        *,
+        payload: dict[str, Any],
+        model: str,
+        timeout_seconds: int,
+    ) -> OllamaResponse:
+        """POST ``payload`` to ``/api/chat`` with retry + parsing.
+
+        Parallel to :meth:`_post_generate` but targets Ollama's
+        ``/api/chat`` endpoint, whose response envelope is
+        ``{"message": {"role": "assistant", "content": "..."}, ...}``
+        instead of ``{"response": "..."}``. All retry / backoff /
+        Prometheus metrics semantics are identical to
+        :meth:`_post_generate` so ``generate_text`` gets the same
+        observability treatment as ``generate_vision``.
+        """
+        url = f"{self._base_url}/api/chat"
+        last_error: BaseException | None = None
+        last_status: int | None = None
+
+        with time_ollama_call(model=model):
+            for attempt in range(_MAX_ATTEMPTS):
+                try:
+                    async with self._client(
+                        timeout=float(timeout_seconds)
+                    ) as client:
+                        response = await client.post(url, json=payload)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    last_status = None
+                    logger.warning(
+                        "ollama.chat transport failure (attempt %d/%d): %s",
+                        attempt + 1,
+                        _MAX_ATTEMPTS,
+                        exc,
+                    )
+                    if attempt + 1 < _MAX_ATTEMPTS:
+                        record_ollama_request_status(model, STATUS_RETRY)
+                        await asyncio.sleep(_sleep_for_attempt(attempt))
+                        continue
+                    break
+
+                status = response.status_code
+                if status == 200:
+                    record_ollama_request_status(model, STATUS_SUCCESS)
+                    return self._parse_chat_response(response, model=model)
+
+                if status in _RETRYABLE_STATUS_CODES:
+                    last_error = None
+                    last_status = status
+                    logger.warning(
+                        "ollama.chat retryable status %d (attempt %d/%d)",
+                        status,
+                        attempt + 1,
+                        _MAX_ATTEMPTS,
+                    )
+                    if attempt + 1 < _MAX_ATTEMPTS:
+                        record_ollama_request_status(model, STATUS_RETRY)
+                        await asyncio.sleep(_sleep_for_attempt(attempt))
+                        continue
+                    break
+
+                # Non-retryable HTTP error — abort immediately.
+                record_ollama_request_status(model, STATUS_ERROR)
+                raise OllamaError(
+                    f"Ollama /api/chat returned HTTP {status}",
+                    status_code=status,
+                )
+
+            # All attempts exhausted.
+            record_ollama_request_status(model, STATUS_ERROR)
+            if last_status is not None:
+                raise OllamaError(
+                    f"Ollama /api/chat exhausted {_MAX_ATTEMPTS} retries "
+                    f"(last status {last_status})",
+                    status_code=last_status,
+                )
+            raise OllamaError(
+                f"Ollama /api/chat exhausted {_MAX_ATTEMPTS} retries "
+                f"(transport error)",
+                status_code=None,
+                cause=last_error,
+            )
+
+    @staticmethod
+    def _parse_chat_response(
+        response: httpx.Response,
+        *,
+        model: str,
+    ) -> OllamaResponse:
+        """Convert a successful ``/api/chat`` response into ``OllamaResponse``.
+
+        Ollama's ``/api/chat`` endpoint returns a JSON object shaped as::
+
+            {
+                "message": {"role": "assistant", "content": "..."},
+                "done": true,
+                "prompt_eval_count": int | None,
+                "eval_count": int | None,
+                "total_duration": int | None,
+                ...
+            }
+
+        The assistant's text is extracted from ``message.content`` and
+        mapped onto the existing :class:`OllamaResponse.response_text`
+        field so downstream callers remain oblivious to the endpoint
+        migration.
+        """
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise OllamaError(
+                "Ollama /api/chat returned non-JSON body",
+                status_code=response.status_code,
+                cause=exc,
+            ) from exc
+
+        if not isinstance(body, dict):
+            raise OllamaError(
+                "Ollama /api/chat returned non-object JSON body",
+                status_code=response.status_code,
+            )
+
+        message = body.get("message")
+        if not isinstance(message, dict):
+            raise OllamaError(
+                "Ollama /api/chat response missing 'message' object",
+                status_code=response.status_code,
+            )
+
+        content = message.get("content")
+        if not isinstance(content, str):
+            raise OllamaError(
+                "Ollama /api/chat response missing 'message.content' field",
+                status_code=response.status_code,
+            )
+
+        return OllamaResponse(
+            response_text=content,
+            model=model,
+            prompt_eval_count=_coerce_optional_int(body.get("prompt_eval_count")),
+            eval_count=_coerce_optional_int(body.get("eval_count")),
+            total_duration_ns=_coerce_optional_int(body.get("total_duration")),
+            raw=body,
+        )
+
 
 def _coerce_optional_int(value: Any) -> int | None:
     """Coerce a JSON-decoded value into ``int | None``.
@@ -481,11 +688,12 @@ def _coerce_optional_int(value: Any) -> int | None:
 
 
 __all__ = [
-    "OllamaClient",
-    "OllamaError",
-    "record_ollama_request_status",
-    "time_ollama_call",
-    "STATUS_SUCCESS",
     "STATUS_ERROR",
     "STATUS_RETRY",
+    "STATUS_SUCCESS",
+    "OllamaClient",
+    "OllamaError",
+    "_escape_untrusted_text",
+    "record_ollama_request_status",
+    "time_ollama_call",
 ]
