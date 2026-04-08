@@ -27,6 +27,7 @@ from zubot_ingestion.services.job_service import (
     InvalidPDFError,
     JobService,
     MAX_PDF_BYTES,
+    NotFoundError,
     OversizeFileError,
 )
 from zubot_ingestion.shared.types import (
@@ -456,9 +457,17 @@ async def test_get_job_returns_job_detail(service, auth_context):
 
 
 @pytest.mark.asyncio
-async def test_get_job_returns_none_for_unknown(service, auth_context):
+async def test_get_job_raises_not_found_for_unknown(service, auth_context):
+    """The canonical JobService raises :class:`NotFoundError` for unknown
+    job ids; the GET /jobs/{job_id} route handler catches that exception
+    and translates it into a 404 response. The original contract of
+    returning ``None`` was superseded by CAP-011 when the explicit
+    NotFoundError path was introduced so the route could produce a
+    structured error body.
+    """
     svc, *_ = service
-    assert await svc.get_job(uuid4(), auth_context) is None
+    with pytest.raises(NotFoundError):
+        await svc.get_job(uuid4(), auth_context)
 
 
 @pytest.mark.asyncio
@@ -483,9 +492,14 @@ async def test_get_batch_returns_batch_with_jobs_dto(service, auth_context):
 
 
 @pytest.mark.asyncio
-async def test_get_batch_returns_none_for_unknown(service, auth_context):
+async def test_get_batch_raises_not_found_for_unknown(service, auth_context):
+    """Same contract change as :func:`test_get_job_raises_not_found_for_unknown`:
+    CAP-010 introduced the explicit NotFoundError path so the
+    GET /batches/{batch_id} route could produce a structured 404.
+    """
     svc, *_ = service
-    assert await svc.get_batch(uuid4(), auth_context) is None
+    with pytest.raises(NotFoundError):
+        await svc.get_batch(uuid4(), auth_context)
 
 
 def test_default_storage_root_constant():

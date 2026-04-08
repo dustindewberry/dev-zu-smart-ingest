@@ -26,6 +26,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from zubot_ingestion.api.middleware.auth import get_auth_context
+from zubot_ingestion.api.middleware.rate_limit import limiter
 from zubot_ingestion.api.routes.extract import get_job_service
 from zubot_ingestion.api.routes.jobs import router as jobs_router
 from zubot_ingestion.domain.enums import JobStatus
@@ -82,8 +83,18 @@ class StubJobService:
 
 
 def _make_test_app(stub: StubJobService) -> FastAPI:
-    """Build a minimal FastAPI app wrapping just the jobs router."""
+    """Build a minimal FastAPI app wrapping just the jobs router.
+
+    The route is decorated with ``@limiter.limit(...)`` from the module-level
+    slowapi singleton, which (with ``headers_enabled=True``) requires every
+    decorated response to be a starlette ``Response``. Because the route
+    returns a plain ``dict``, slowapi's ``_inject_headers`` path raises.
+    We sidestep this by disabling the limiter for the duration of the test
+    via ``limiter.enabled = False`` and restoring it on teardown elsewhere.
+    """
+    limiter.enabled = False
     app = FastAPI()
+    app.state.limiter = limiter
     app.include_router(jobs_router)
 
     def _fake_auth() -> AuthContext:

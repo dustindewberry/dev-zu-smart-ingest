@@ -57,8 +57,12 @@ def test_global_exception_handler_registered() -> None:
     assert Exception in app.exception_handlers
 
 
-def test_no_business_routes_registered() -> None:
-    """Step-4 must not mount any routers — those land in later steps."""
+def test_business_routes_registered() -> None:
+    """After all worker tasks merged, the canonical business routers must
+    be wired into ``create_app``. The original step-4 contract (no business
+    routes) was superseded by later steps that landed extract, jobs,
+    batches, health, metrics, and the review queue endpoints.
+    """
     app = create_app()
     business_paths = {
         r.path  # type: ignore[attr-defined]
@@ -67,9 +71,18 @@ def test_no_business_routes_registered() -> None:
         and r.path  # type: ignore[attr-defined]
         not in {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
     }
-    assert business_paths == set(), (
-        f"Step 4 should register only docs routes; found extras: {business_paths}"
-    )
+    expected = {
+        "/extract",
+        "/jobs/{job_id}",
+        "/batches/{batch_id}",
+        "/health",
+        "/metrics",
+        "/review/pending",
+        "/review/{job_id}/approve",
+        "/review/{job_id}/reject",
+    }
+    missing = expected - business_paths
+    assert not missing, f"Expected business routes missing from app: {missing}"
 
 
 def test_docs_endpoint_serves_html() -> None:
@@ -90,7 +103,13 @@ def test_openapi_schema_reflects_metadata() -> None:
 
 def test_unhandled_exception_returns_json_500() -> None:
     """A route that raises ``Exception`` must be caught by the handler and
-    serialized as a JSON 500 — never as a stack trace."""
+    serialized as a JSON 500 — never as a stack trace.
+
+    The test app wires the full middleware stack (including AuthMiddleware
+    from CAP-026), so the request must carry the static API key header set
+    by ``tests/conftest.py`` to pass authentication before reaching the
+    locally-registered ``/_boom`` route.
+    """
     app = create_app()
 
     @app.get("/_boom")  # registered locally for this test only
@@ -98,7 +117,7 @@ def test_unhandled_exception_returns_json_500() -> None:
         raise RuntimeError("kaboom")
 
     with TestClient(app, raise_server_exceptions=False) as client:
-        resp = client.get("/_boom")
+        resp = client.get("/_boom", headers={"X-API-Key": "test-api-key"})
     assert resp.status_code == 500
     body = resp.json()
     assert body["error"] == "internal_server_error"

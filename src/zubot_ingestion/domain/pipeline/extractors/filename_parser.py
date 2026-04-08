@@ -42,7 +42,7 @@ _DRAWING_NUMBER_PATTERNS: tuple[tuple[re.Pattern[str], str, float], ...] = (
     (re.compile(r"(DWG-\d+)"), "dwg_prefix", 0.70),
 )
 
-_REVISION_PATTERN: re.Pattern[str] = re.compile(r"Rev\s*([A-Z]?\d{2})", re.IGNORECASE)
+_REVISION_PATTERN: re.Pattern[str] = re.compile(r"Rev[\s_]*([A-Z]?\d{2})", re.IGNORECASE)
 
 # Discipline keyword → enum value. The check is case-insensitive and runs
 # against each path segment AND the filename stem.
@@ -110,13 +110,29 @@ def _match_revision(text: str) -> str | None:
 
 
 def _infer_discipline(filename: str) -> Discipline | None:
-    """Infer discipline from path segments OR the filename stem."""
+    """Infer discipline from path segments OR the filename stem.
+
+    Matches in either direction — a discipline keyword either containing
+    a path segment (e.g. segment ``"elec"`` → keyword ``"electrical"``)
+    or being contained in a segment (e.g. segment ``"electrical"``
+    anywhere) counts as a hit. The bidirectional check lets operators
+    abbreviate folder names without sacrificing discipline detection.
+    """
     segments_lower = [seg.lower() for seg in _split_path_segments(filename)]
     stem_lower = _stem(filename).lower()
     haystacks = [*segments_lower, stem_lower]
     for keyword, discipline in _DISCIPLINE_KEYWORDS:
-        if any(keyword in h for h in haystacks):
-            return discipline
+        for h in haystacks:
+            if not h:
+                continue
+            if keyword in h:
+                return discipline
+            # Allow a short path segment (>=3 chars) to prefix-match a
+            # longer discipline keyword so ``elec/`` resolves to
+            # ``electrical``. The minimum length prevents single-letter
+            # false positives.
+            if len(h) >= 3 and keyword.startswith(h):
+                return discipline
     return None
 
 

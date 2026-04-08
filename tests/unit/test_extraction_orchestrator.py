@@ -420,7 +420,13 @@ async def test_happy_path_returns_pipeline_result_with_all_fields() -> None:
     assert result.sidecar.metadata_attributes["source_filename"] == "test.pdf"
     assert result.confidence_assessment.tier == ConfidenceTier.AUTO
     assert result.confidence_assessment.overall_confidence == pytest.approx(0.85)
-    assert result.otel_trace_id is None
+    # CAP-027 wired OTEL spans into the orchestrator, so every run now
+    # captures the active trace id from the job span. With a noop tracer
+    # provider (the default when OTEL_EXPORTER_OTLP_ENDPOINT is unset)
+    # this is the 32-char zero hex string rather than ``None``.
+    assert result.otel_trace_id is not None
+    assert isinstance(result.otel_trace_id, str)
+    assert len(result.otel_trace_id) == 32
     assert result.errors == []
 
     # Each Stage 1 extractor was invoked exactly once.

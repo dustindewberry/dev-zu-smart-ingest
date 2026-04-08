@@ -107,11 +107,18 @@ def test_extract_document_task_name_matches_constant() -> None:
     assert celery_mod.extract_document_task.name == CELERY_TASK_NAME_EXTRACTION
 
 
-def test_extract_document_task_raises_not_implemented() -> None:
-    # Run the task body synchronously. The @task decorator injects ``self``
-    # as the task instance, so call via .run() to mimic Celery's invocation.
-    with pytest.raises(NotImplementedError, match="step-16"):
-        celery_mod.extract_document_task.run("00000000-0000-0000-0000-000000000000")
+def test_extract_document_task_has_callable_body() -> None:
+    """The step-7 contract required this task to raise NotImplementedError
+    with 'step-16' in the message as a landing-point marker. Step-16 has
+    since landed and replaced the placeholder with the real pipeline
+    execution body, so the NotImplementedError sentinel is gone. This
+    smoke test simply confirms the task is still registered with a
+    callable ``run`` method (the real execution path requires a live
+    postgres and is covered by integration tests elsewhere).
+    """
+    task = celery_mod.extract_document_task
+    assert callable(task.run)
+    assert task.name == CELERY_TASK_NAME_EXTRACTION
 
 
 def test_extract_document_task_retry_policy() -> None:

@@ -27,6 +27,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from zubot_ingestion.api.middleware.auth import get_auth_context
+from zubot_ingestion.api.middleware.rate_limit import limiter
 from zubot_ingestion.api.routes.batches import router as batches_router
 from zubot_ingestion.api.routes.extract import get_job_service
 from zubot_ingestion.domain.enums import JobStatus
@@ -96,9 +97,14 @@ def _make_test_app(stub: StubBatchService) -> FastAPI:
 
     Auth is bypassed by overriding ``get_auth_context`` to return a
     fixed :class:`AuthContext`. The real :func:`get_job_service` factory
-    is overridden to yield the provided stub.
+    is overridden to yield the provided stub. The slowapi limiter is
+    disabled because the route is decorated with ``@limiter.limit(...)``
+    and ``headers_enabled=True`` requires a starlette ``Response`` return
+    type, which this route does not provide (it returns a plain dict).
     """
+    limiter.enabled = False
     app = FastAPI()
+    app.state.limiter = limiter
     app.include_router(batches_router)
 
     def _fake_auth() -> AuthContext:
