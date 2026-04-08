@@ -1,0 +1,254 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "zubot-ingestion"
+version = "0.1.0"
+description = "Standalone smart ingestion service for construction PDF metadata extraction."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "Proprietary" }
+authors = [
+    { name = "CD Solutions" },
+]
+keywords = [
+    "pdf",
+    "extraction",
+    "metadata",
+    "construction",
+    "ollama",
+    "fastapi",
+    "celery",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn[standard]>=0.32.0",
+    "celery>=5.4.0",
+    "redis>=5.0.0",
+    "asyncpg>=0.30.0",
+    "sqlalchemy>=2.0.0",
+    "alembic>=1.14.0",
+    "pymupdf>=1.25.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.10.0",
+    "pydantic-settings>=2.6.0",
+    "chromadb>=0.5.0",
+    "elasticsearch>=8.13.0",
+    "opentelemetry-api>=1.25.0",
+    "opentelemetry-sdk>=1.25.0",
+    "opentelemetry-exporter-otlp>=1.25.0",
+    "opentelemetry-instrumentation-fastapi>=0.46b0",
+    "opentelemetry-instrumentation-httpx>=0.46b0",
+    "opentelemetry-instrumentation-asyncpg>=0.46b0",
+    "opentelemetry-instrumentation-redis>=0.46b0",
+    "opentelemetry-instrumentation-celery>=0.46b0",
+    "prometheus-client>=0.21.0",
+    "json-repair>=0.30.0",
+    "slowapi>=0.1.9",
+    "structlog>=24.4.0",
+    "pyjwt>=2.9.0",
+    "python-multipart>=0.0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+    "pytest-cov>=5.0.0",
+    "mypy>=1.13.0",
+    "ruff>=0.7.0",
+    "import-linter>=2.0",
+    "pre-commit>=4.0.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/cdsolutions/zubot-ingestion"
+Repository = "https://github.com/cdsolutions/zubot-ingestion"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["zubot_ingestion*"]
+
+[tool.setuptools.package-data]
+zubot_ingestion = ["py.typed"]
+
+# ---------------------------------------------------------------------------
+# pytest
+# ---------------------------------------------------------------------------
+[tool.pytest.ini_options]
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"
+addopts = [
+    "-ra",
+    "--strict-markers",
+    "--strict-config",
+    "--tb=short",
+]
+markers = [
+    "unit: fast, isolated unit tests",
+    "integration: tests that require real infrastructure dependencies",
+    "e2e: end-to-end tests that spin up the full service",
+    "slow: tests that take longer than 1 second to run",
+]
+filterwarnings = [
+    "error",
+    "ignore::DeprecationWarning",
+    "ignore::PendingDeprecationWarning",
+]
+
+# ---------------------------------------------------------------------------
+# coverage
+# ---------------------------------------------------------------------------
+[tool.coverage.run]
+branch = true
+source = ["src/zubot_ingestion"]
+
+[tool.coverage.report]
+precision = 2
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+]
+
+# ---------------------------------------------------------------------------
+# mypy: strict mode for src/zubot_ingestion/
+# ---------------------------------------------------------------------------
+[tool.mypy]
+python_version = "3.12"
+mypy_path = "src"
+packages = ["zubot_ingestion"]
+namespace_packages = true
+explicit_package_bases = true
+files = ["src/zubot_ingestion"]
+exclude = [
+    "^build/",
+    "^dist/",
+    "^\\.venv/",
+    "^alembic/versions/",
+    "^migrations/versions/",
+]
+strict = true
+warn_unused_configs = true
+warn_redundant_casts = true
+warn_unused_ignores = true
+warn_return_any = true
+warn_unreachable = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+check_untyped_defs = true
+disallow_untyped_decorators = true
+disallow_any_generics = true
+disallow_subclassing_any = true
+no_implicit_optional = true
+no_implicit_reexport = true
+strict_equality = true
+extra_checks = true
+show_error_codes = true
+show_error_context = true
+show_column_numbers = true
+pretty = true
+
+[[tool.mypy.overrides]]
+module = [
+    "celery.*",
+    "chromadb.*",
+    "fitz.*",
+    "pymupdf.*",
+    "slowapi.*",
+    "json_repair.*",
+    "kombu.*",
+    "prometheus_client.*",
+]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "tests.*"
+disallow_untyped_defs = false
+disallow_incomplete_defs = false
+
+# ---------------------------------------------------------------------------
+# ruff: lint + format
+# Enforced line length 100, Python 3.12 target, layered architecture-friendly.
+# ---------------------------------------------------------------------------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = [
+    ".venv",
+    "build",
+    "dist",
+    "migrations/versions",
+    "alembic/versions",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "B",    # flake8-bugbear
+    "C4",   # flake8-comprehensions
+    "UP",   # pyupgrade
+    "N",    # pep8-naming
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+    "PL",   # pylint
+    "PT",   # flake8-pytest-style
+    "TID",  # flake8-tidy-imports
+    "ARG",  # flake8-unused-arguments
+    "PTH",  # flake8-use-pathlib
+    "ERA",  # eradicate (commented-out code)
+    "PIE",  # flake8-pie
+    "ASYNC",# flake8-async
+    "S",    # flake8-bandit (security)
+    "TCH",  # flake8-type-checking
+]
+ignore = [
+    "E501",    # line too long (handled by formatter)
+    "PLR0913", # too many arguments to function call
+    "PLR2004", # magic value used in comparison
+    "S101",    # use of assert (acceptable in tests)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = [
+    "ARG001",  # unused function argument (fixtures)
+    "PLR2004", # magic values in tests
+    "S101",    # use of assert
+    "S105",    # hardcoded password string
+    "S106",    # hardcoded password function argument
+]
+"src/zubot_ingestion/**/__init__.py" = [
+    "F401",    # unused imports in __init__.py are re-exports
+]
+"alembic/**/*.py" = ["E402", "N806"]
+"migrations/**/*.py" = ["E402", "N806"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["zubot_ingestion"]
+combine-as-imports = true
+
+[tool.ruff.lint.pydocstyle]
+convention = "google"
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+line-ending = "lf"
+docstring-code-format = true

@@ -1,0 +1,23 @@
+# Zubot Ingestion — development dependencies
+# Install with: pip install -r requirements-dev.txt
+# Includes everything from requirements.txt plus tooling for test, lint,
+# type-check, architectural enforcement, and pre-commit hooks.
+
+-r requirements.txt
+
+# --- Testing ---
+pytest>=8.0.0
+pytest-asyncio>=0.24.0
+pytest-cov>=5.0.0
+
+# --- Type checking ---
+mypy>=1.13.0
+
+# --- Linting / formatting ---
+ruff>=0.7.0
+
+# --- Architecture enforcement ---
+import-linter>=2.0
+
+# --- Git hooks ---
+pre-commit>=4.0.0

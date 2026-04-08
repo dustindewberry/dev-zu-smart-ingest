@@ -1,0 +1,53 @@
+# VCS
+.git
+.gitignore
+.gitattributes
+
+# Python build/cache artefacts
+__pycache__
+*.py[cod]
+*$py.class
+*.egg-info
+.eggs
+build
+dist
+.venv
+venv
+env
+.python-version
+
+# Test / coverage / type-checker caches
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+.coverage.*
+htmlcov
+.tox
+.nox
+
+# Editor / OS
+.idea
+.vscode
+.DS_Store
+*.swp
+
+# Project-local files that should not ship in the image
+.env
+.env.*
+!.env.example
+logs
+*.log
+.beads
+.forge
+
+# Tests and docs are not needed at runtime
+tests
+docs
+README.md
+*.md
+
+# Docker artefacts themselves
+Dockerfile
+docker-compose.yml
+.dockerignore
