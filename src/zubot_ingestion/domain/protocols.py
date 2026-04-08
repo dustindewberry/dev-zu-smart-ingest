@@ -17,6 +17,7 @@ infrastructure.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from typing import Any, Protocol, TypeVar, runtime_checkable
 from uuid import UUID
 
@@ -34,14 +35,15 @@ from zubot_ingestion.domain.entities import (
     RenderedPage,
     ReviewAction,
     SidecarDocument,
-    ValidationResult,
 )
-from zubot_ingestion.domain.enums import JobStatus
+from zubot_ingestion.domain.enums import ConfidenceTier, JobStatus
 from zubot_ingestion.shared.types import (
     AuthContext,
     BatchSubmissionResult,
     BatchWithJobs,
+    FileHash,
     JobDetail,
+    JobId,
     PaginatedResult,
     RateLimitResult,
     ReviewCorrections,
@@ -53,6 +55,29 @@ from zubot_ingestion.shared.types import (
 )
 
 T = TypeVar("T")
+
+
+# ---------------------------------------------------------------------------
+# Shared dataclasses referenced by multiple protocols
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ValidationResult:
+    """Result of validating a companion description against extraction metadata.
+
+    Consumed by ``IConfidenceCalculator`` and produced by
+    ``ICompanionValidator``. ``confidence_penalty`` is a value in ``[0.0, 1.0]``
+    that the confidence calculator subtracts from the base confidence score
+    before clamping. ``failures`` are human-readable reasons validation failed;
+    ``warnings`` are non-blocking issues that should be surfaced but do not
+    invalidate the result.
+    """
+
+    is_valid: bool
+    confidence_penalty: float
+    failures: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
 
 
 # ---------------------------------------------------------------------------
@@ -420,7 +445,7 @@ class ICompanionGenerator(Protocol):
 class ICompanionValidator(Protocol):
     """Validate companion descriptions against extraction results (§4.10)."""
 
-    def validate(
+    async def validate(
         self,
         companion_text: str,
         extraction_result: ExtractionResult,
@@ -437,8 +462,9 @@ class ICompanionValidator(Protocol):
             extraction_result: Stage 1 extraction results
 
         Returns:
-            ValidationResult with passed status, warnings list, and
-            confidence_adjustment factor (negative if inconsistencies found)
+            ValidationResult with ``is_valid``, a ``confidence_penalty`` in
+            ``[0.0, 1.0]`` subtracted from the base confidence score,
+            ``failures`` (blocking reasons), and ``warnings`` (non-blocking).
         """
         ...
 
@@ -756,11 +782,11 @@ class IJobRepository(Protocol):
         """
         ...
 
-    async def get_job_by_file_hash(self, file_hash: str) -> Job | None:
+    async def get_job_by_file_hash(self, file_hash: FileHash) -> Job | None:
         """Retrieve job by file hash (for deduplication).
 
         Args:
-            file_hash: SHA-256 hash of the file
+            file_hash: SHA-256 hash of the file (branded ``FileHash``)
 
         Returns:
             Job if found, None otherwise
@@ -781,6 +807,40 @@ class IJobRepository(Protocol):
             status: New status
             result: Extraction result dict (optional)
             error_message: Error message if failed (optional)
+        """
+        ...
+
+    async def update_job_result(
+        self,
+        job_id: JobId,
+        *,
+        result: dict[str, Any],
+        confidence_tier: ConfidenceTier,
+        confidence_score: float,
+        processing_time_ms: int,
+        otel_trace_id: str | None,
+        pipeline_trace: dict[str, Any] | None,
+    ) -> None:
+        """Persist a completed job's extraction result and indexed columns.
+
+        Writes the JSONB ``result`` blob AND the dedicated indexed columns
+        ``confidence_tier``, ``confidence_score``, ``processing_time_ms``,
+        ``otel_trace_id``, and ``pipeline_trace``. These indexed columns are
+        what powers pending-review pagination filtering on ``confidence_tier``,
+        Prometheus tier metrics, OTEL trace correlation, and per-stage timing
+        dashboards — writing only ``update_job_status(result=...)`` leaves
+        them NULL and breaks those downstream consumers.
+
+        Args:
+            job_id: Branded ``JobId`` of the job to update
+            result: Full extraction result payload (JSONB blob)
+            confidence_tier: ``ConfidenceTier`` assigned by the confidence
+                calculator (AUTO / SPOT / REVIEW)
+            confidence_score: Overall confidence score in ``[0.0, 1.0]``
+            processing_time_ms: Wall-clock pipeline duration in milliseconds
+            otel_trace_id: OpenTelemetry trace ID for this job's pipeline run
+                (hex string, or ``None`` if tracing was disabled)
+            pipeline_trace: Structured per-stage trace dict, or ``None``
         """
         ...
 
@@ -857,32 +917,26 @@ class ISearchIndexer(Protocol):
 
     async def index_companion(
         self,
-        document_id: str,
-        extraction_result: ExtractionResult,
-        companion_result: CompanionResult,
-        deployment_id: int | None,
-    ) -> bool:
-        """Index companion document in Elasticsearch.
-
-        Index name format: zubot_companion_{deployment_id}
-        If deployment_id is None, uses 'zubot_companion_default'.
+        *,
+        job_id: JobId,
+        companion_text: str,
+        metadata: dict[str, Any],
+    ) -> None:
+        """Index a companion document in the full-text search store.
 
         Args:
-            document_id: Unique document identifier (file_hash)
-            extraction_result: Extraction metadata for structured fields
-            companion_result: Companion text for full-text search
-            deployment_id: Deployment ID for index routing
-
-        Returns:
-            True if indexing succeeded, False otherwise
+            job_id: Branded ``JobId`` of the originating extraction job
+            companion_text: Generated visual description text to index
+            metadata: Structured metadata to attach (drawing_number, title,
+                document_type, deployment_id, node_id, etc.)
         """
         ...
 
-    async def check_connection(self) -> bool:
-        """Check Elasticsearch connection health.
+    async def health_check(self) -> bool:
+        """Check search store connection health.
 
         Returns:
-            True if connected, False otherwise
+            True if the search store is reachable and healthy, False otherwise
         """
         ...
 
@@ -893,22 +947,30 @@ class ICallbackClient(Protocol):
 
     async def notify_completion(
         self,
+        *,
         callback_url: str,
-        job: Job,
-        api_key: str,
+        job_id: JobId,
+        status: str,
+        result: dict[str, Any] | None,
+        error: str | None,
     ) -> bool:
-        """Send job completion notification to callback URL.
+        """Send a job completion notification to a callback URL.
 
-        Sends POST request with job result payload. Retries with
-        exponential backoff on failure (max 3 attempts).
+        Sends a POST request with a structured completion payload. The
+        caller is responsible for supplying the completion status string
+        (typically ``"completed"`` or ``"failed"``). Implementations should
+        retry with exponential backoff on transient failures.
 
         Args:
-            callback_url: URL to POST notification to
-            job: Completed job with result
-            api_key: API key for authentication header
+            callback_url: URL to POST the completion notification to
+            job_id: Branded ``JobId`` of the completed job
+            status: Completion status string (e.g. ``"completed"``, ``"failed"``)
+            result: Extraction result payload, or ``None`` for failures
+            error: Error message, or ``None`` for successful completions
 
         Returns:
-            True if notification delivered, False if all retries failed
+            True if the notification was delivered successfully, False if all
+            retries were exhausted.
         """
         ...
 
@@ -933,4 +995,5 @@ __all__ = [
     "ISearchIndexer",
     "ISidecarBuilder",
     "ITaskQueue",
+    "ValidationResult",
 ]

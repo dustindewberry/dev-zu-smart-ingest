@@ -229,6 +229,25 @@ SENSITIVE_KEY_FRAGMENTS: tuple[str, ...] = (
 REDACTION_PLACEHOLDER: str = "***REDACTED***"
 
 
+# ---------------------------------------------------------------------------
+# Build-gate sentinel strings
+# ---------------------------------------------------------------------------
+
+# Build-gate sentinel strings — CI/regression tests grep for these to detect
+# placeholder files that PolyForge sibling tasks were supposed to overwrite
+# on merge but never did. If any of the files listed in
+# ``BUILD_GATE_PROTECTED_FILES`` contain either of the sentinel strings, or
+# are suspiciously empty, the build is considered broken.
+PLACEHOLDER_SENTINEL_OVERWRITE: str = "MUST overwrite this file on merge"
+PLACEHOLDER_SENTINEL_OWNED_BY: str = "placeholder owned by"
+BUILD_GATE_PROTECTED_FILES: tuple[str, ...] = (
+    "src/zubot_ingestion/api/routes/review.py",
+    "src/zubot_ingestion/infrastructure/elasticsearch/__init__.py",
+    "src/zubot_ingestion/infrastructure/callback/__init__.py",
+    "src/zubot_ingestion/domain/pipeline/validation.py",
+)
+
+
 __all__ = [
     # Service identifiers
     "SERVICE_NAME",
@@ -296,4 +315,8 @@ __all__ = [
     # Structured logging (CAP-029)
     "SENSITIVE_KEY_FRAGMENTS",
     "REDACTION_PLACEHOLDER",
+    # Build-gate sentinel strings
+    "PLACEHOLDER_SENTINEL_OVERWRITE",
+    "PLACEHOLDER_SENTINEL_OWNED_BY",
+    "BUILD_GATE_PROTECTED_FILES",
 ]
