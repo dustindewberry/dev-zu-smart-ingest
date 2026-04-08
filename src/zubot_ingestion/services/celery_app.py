@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from pathlib import Path
 from typing import Any
 from uuid import UUID
@@ -215,27 +216,24 @@ def extract_document_task(self, job_id: str) -> dict:  # type: ignore[no-untyped
         :meth:`ITaskQueue.get_task_status` can read the high-level outcome
         without re-querying the repository.
     """
-    # Lazy import keeps this module's import-time graph free of any
-    # infrastructure modules. The factory below performs the actual
-    # adapter construction (build_orchestrator is imported inside the
-    # async body that actually uses it).
-    from zubot_ingestion.services import get_job_repository
-
     parsed_job_id = UUID(job_id)
 
     try:
         return asyncio.run(_run_extract_document_task(parsed_job_id))
-    except Exception as exc:  # noqa: BLE001 - mark failed then re-raise
+    except Exception as exc:  # noqa: BLE001 - mark failed on final retry then re-raise
         _LOG.exception("extract_document_task_failed", extra={"job_id": job_id})
-        try:
-            repo = get_job_repository()
-            asyncio.run(_mark_job_failed(repo, parsed_job_id, exc))
-        except Exception:  # noqa: BLE001 - never let cleanup mask the original
-            _LOG.exception(
-                "extract_document_task_failed_cleanup_failed",
-                extra={"job_id": job_id},
-            )
-        raise
+        # Only mark job as FAILED on the final retry attempt — autoretry_for will
+        # still trigger retries for non-final attempts. This prevents
+        # FAILED <-> PROCESSING flapping in the job status across retries.
+        if self.request.retries >= self.max_retries:
+            try:
+                asyncio.run(_mark_job_failed(parsed_job_id, exc))
+            except Exception:  # noqa: BLE001 - never let cleanup mask the original
+                _LOG.exception(
+                    "extract_document_task_failed_cleanup_failed",
+                    extra={"job_id": job_id},
+                )
+        raise  # let autoretry_for handle the retry
 
 
 async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
@@ -244,62 +242,69 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
     Separated from the synchronous Celery task body so it can be unit
     tested directly with ``asyncio.run`` (without going through Celery's
     eager-mode shim).
+
+    Each independent DB operation opens its own ``async with
+    get_job_repository() as repo:`` block — sessions are never held open
+    across the long-running pipeline call so that Celery retries cannot
+    leave a stale session attached to the worker process.
     """
     from zubot_ingestion.services import build_orchestrator, get_job_repository
 
-    repo = get_job_repository()
-
-    job = await repo.get_job(job_id)
-    if job is None:
-        raise LookupError(f"job {job_id} not found in repository")
-
-    # Fetch the parent batch so we can forward deployment_id / node_id to the
-    # orchestrator's metadata writer (CAP-023). Failure to load the batch is
-    # tolerated — the orchestrator will fall back to the 'default' ChromaDB
-    # collection if both IDs are None.
+    # Stage A: load the job and (best-effort) the parent batch.
     deployment_id: int | None = None
     node_id: int | None = None
-    try:
-        batch = await repo.get_batch(job.batch_id)
-        if batch is not None:
-            deployment_id = batch.deployment_id
-            node_id = batch.node_id
-    except Exception:  # noqa: BLE001 - tolerate missing batch
-        _LOG.warning(
-            "extract_document_task_batch_lookup_failed",
-            extra={"job_id": str(job.job_id), "batch_id": str(job.batch_id)},
+    async with get_job_repository() as repo:
+        job = await repo.get_job(job_id)
+        if job is None:
+            raise LookupError(f"job {job_id} not found in repository")
+
+        # Fetch the parent batch so we can forward deployment_id / node_id to
+        # the orchestrator's metadata writer (CAP-023). Failure to load the
+        # batch is tolerated — the orchestrator will fall back to the
+        # 'default' ChromaDB collection if both IDs are None.
+        try:
+            batch = await repo.get_batch(job.batch_id)
+            if batch is not None:
+                deployment_id = batch.deployment_id
+                node_id = batch.node_id
+        except Exception:  # noqa: BLE001 - tolerate missing batch
+            _LOG.warning(
+                "extract_document_task_batch_lookup_failed",
+                extra={"job_id": str(job.job_id), "batch_id": str(job.batch_id)},
+            )
+
+        # Mark the job as PROCESSING before running the pipeline so the API
+        # can observe the in-flight state. This call legitimately only
+        # changes status — it must remain ``update_job_status``.
+        await repo.update_job_status(
+            job.job_id,
+            status=JobStatus.PROCESSING,
+            result=None,
+            error_message=None,
         )
 
+    # Stage B: run the pipeline. Do NOT hold a DB session across this call —
+    # the orchestrator may take many seconds and Celery retries should not
+    # leak idle sessions.
     pdf_path = TEMP_PDF_ROOT / str(job.batch_id) / f"{job.job_id}.pdf"
     pdf_bytes = pdf_path.read_bytes()
 
     orchestrator = build_orchestrator()
 
-    # Mark the job as PROCESSING before running the pipeline so the API can
-    # observe the in-flight state.
-    await repo.update_job_status(
-        job.job_id,
-        status=JobStatus.PROCESSING,
-        result=None,
-        error_message=None,
-    )
-
+    pipeline_start = time.monotonic()
     pipeline_result = await orchestrator.run_pipeline(
         job,
         pdf_bytes,
         deployment_id=deployment_id,
         node_id=node_id,
     )
+    processing_time_ms = int((time.monotonic() - pipeline_start) * 1000)
 
     # Choose the persisted job status from the assessment tier:
     #   AUTO   -> COMPLETED   (auto-publish)
     #   SPOT   -> COMPLETED   (publish, flag for spot-check)
     #   REVIEW -> REVIEW      (block on human reviewer)
-    new_status = (
-        JobStatus.REVIEW
-        if pipeline_result.confidence_assessment.tier.value == "review"
-        else JobStatus.COMPLETED
-    )
+    is_review = pipeline_result.confidence_assessment.tier.value == "review"
 
     result_payload: dict[str, Any] = {
         "drawing_number": pipeline_result.extraction_result.drawing_number,
@@ -315,13 +320,33 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
         "pipeline_trace": pipeline_result.pipeline_trace,
     }
 
-    await repo.update_job_status(
-        job.job_id,
-        status=new_status,
-        result=result_payload,
-        error_message=None,
-    )
+    # Stage C: persist the terminal result. The COMPLETED success path uses
+    # ``update_job_result`` to populate the indexed columns
+    # (confidence_tier, confidence_score, processing_time_ms, otel_trace_id,
+    # pipeline_trace) so that the review-queue pagination + Prometheus tier
+    # metrics are no longer blind. The REVIEW path keeps ``update_job_status``
+    # because ``update_job_result`` hard-codes status=COMPLETED in the
+    # repository.
+    async with get_job_repository() as repo:
+        if is_review:
+            await repo.update_job_status(
+                job.job_id,
+                status=JobStatus.REVIEW,
+                result=result_payload,
+                error_message=None,
+            )
+        else:
+            await repo.update_job_result(
+                job.job_id,
+                result=result_payload,
+                confidence_tier=pipeline_result.confidence_assessment.tier,
+                confidence_score=pipeline_result.confidence_assessment.overall_confidence,
+                processing_time_ms=processing_time_ms,
+                otel_trace_id=pipeline_result.otel_trace_id,
+                pipeline_trace=pipeline_result.pipeline_trace,
+            )
 
+    new_status = JobStatus.REVIEW if is_review else JobStatus.COMPLETED
     return {
         "job_id": str(job.job_id),
         "status": new_status.value,
@@ -330,14 +355,22 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
     }
 
 
-async def _mark_job_failed(repo: Any, job_id: UUID, exc: BaseException) -> None:
-    """Persist a FAILED status + error message to the repository."""
-    await repo.update_job_status(
-        job_id,
-        status=JobStatus.FAILED,
-        result=None,
-        error_message=f"{type(exc).__name__}: {exc}",
-    )
+async def _mark_job_failed(job_id: UUID, exc: BaseException) -> None:
+    """Persist a FAILED status + error message to the repository.
+
+    Opens its own ``async with get_job_repository() as repo:`` block so the
+    cleanup path is self-contained and never shares a session with the
+    main pipeline body.
+    """
+    from zubot_ingestion.services import get_job_repository
+
+    async with get_job_repository() as repo:
+        await repo.update_job_status(
+            job_id,
+            status=JobStatus.FAILED,
+            result=None,
+            error_message=f"{type(exc).__name__}: {exc}",
+        )
 
 
 __all__ = [
