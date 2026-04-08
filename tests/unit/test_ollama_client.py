@@ -168,14 +168,43 @@ async def test_generate_vision_uses_explicit_model_and_temperature() -> None:
 # ---------------------------------------------------------------------------
 
 
+def _ok_chat_body(text: str = '{"drawing_number": "A-101"}') -> dict[str, Any]:
+    """A representative successful Ollama /api/chat response body.
+
+    Task-7 migrated ``generate_text`` from ``/api/generate`` to
+    ``/api/chat`` so the server now returns the assistant's reply
+    under ``message.content`` instead of the top-level ``response``
+    field. Tests that exercise ``generate_text`` should use this helper
+    so they match the real wire format.
+    """
+    return {
+        "model": "qwen2.5:7b",
+        "created_at": "2026-04-07T10:00:00Z",
+        "message": {"role": "assistant", "content": text},
+        "done": True,
+        "prompt_eval_count": 42,
+        "eval_count": 17,
+        "total_duration": 1_234_567_890,
+    }
+
+
 @pytest.mark.asyncio
-async def test_generate_text_builds_full_prompt_and_omits_images() -> None:
-    """Text calls embed CONTEXT and never carry an 'images' field."""
+async def test_generate_text_uses_chat_endpoint_with_two_role_messages() -> None:
+    """Text calls hit /api/chat with system+user messages, no 'images' field.
+
+    Task-7 switched the text path to Ollama's ``/api/chat`` endpoint as
+    a prompt-injection hardening measure: the instruction and the
+    untrusted document text travel as two separate turns
+    (``system`` + ``user``) rather than being concatenated into a
+    single prompt string. The request body therefore carries a
+    ``messages`` array, not a ``prompt`` field, and has no ``images``.
+    """
     captured: dict[str, Any] = {}
 
     def handler(request: httpx.Request) -> httpx.Response:
+        captured["url"] = str(request.url)
         captured["body"] = json.loads(request.content)
-        return httpx.Response(200, json=_ok_generate_body(text='{"title": "X"}'))
+        return httpx.Response(200, json=_ok_chat_body(text='{"title": "X"}'))
 
     client = _make_client(handler)
     result = await client.generate_text(
@@ -183,13 +212,23 @@ async def test_generate_text_builds_full_prompt_and_omits_images() -> None:
         prompt="find the title",
     )
 
+    assert captured["url"].endswith("/api/chat")
     body = captured["body"]
-    assert body["prompt"] == "find the title\n\nCONTEXT:\npage 1 text content"
     assert body["model"] == OLLAMA_MODEL_TEXT
     assert body["options"] == {"temperature": 0.0}
     assert body["format"] == "json"
     assert body["stream"] is False
     assert "images" not in body
+    assert "prompt" not in body  # /api/chat uses messages, not prompt
+    # Two-role turn structure: system = instruction, user = untrusted text
+    assert isinstance(body["messages"], list)
+    assert len(body["messages"]) == 2
+    assert body["messages"][0]["role"] == "system"
+    assert body["messages"][0]["content"] == "find the title"
+    assert body["messages"][1]["role"] == "user"
+    # The untrusted text is escaped for closing fences/tags but the
+    # plain input has no such delimiters, so content matches verbatim.
+    assert body["messages"][1]["content"] == "page 1 text content"
 
     assert result.response_text == '{"title": "X"}'
     assert result.model == OLLAMA_MODEL_TEXT
@@ -317,10 +356,23 @@ async def test_non_json_body_raises_ollama_error() -> None:
 
 @pytest.mark.asyncio
 async def test_missing_counters_become_none() -> None:
-    """Optional counter fields default to None when Ollama omits them."""
+    """Optional counter fields default to None when Ollama omits them.
+
+    Task-7 migrated ``generate_text`` to ``/api/chat`` whose success
+    shape nests the assistant reply under ``message.content`` instead
+    of a top-level ``response`` field, so this test uses a minimal
+    ``message`` object rather than the old ``{"response": ..., "done":
+    ...}`` shape.
+    """
 
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(200, json={"response": "{}", "done": True})
+        return httpx.Response(
+            200,
+            json={
+                "message": {"role": "assistant", "content": "{}"},
+                "done": True,
+            },
+        )
 
     client = _make_client(handler)
     result = await client.generate_text(text="t", prompt="p")

@@ -101,10 +101,11 @@ def test_protected_files_contain_no_placeholder_sentinels() -> None:
             f"has been silently replaced with a placeholder again."
         )
 
-        # Stub detection: a file with fewer than 4 non-blank lines is
-        # almost certainly a 1-line-docstring placeholder.
+        # Stub detection: a canonical 3-line re-export __init__.py
+        # (docstring + import + __all__) is legitimate, so only flag
+        # files with fewer than 3 non-blank lines as placeholder stubs.
         non_blank = [line for line in text.splitlines() if line.strip()]
-        assert len(non_blank) > 3, (
+        assert len(non_blank) >= 3, (
             f"Protected file {rel_path} has only {len(non_blank)} "
             f"non-blank lines — this looks like a placeholder stub. "
             f"The canonical implementation is missing."

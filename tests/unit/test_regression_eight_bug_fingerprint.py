@@ -205,7 +205,7 @@ async def test_update_job_result_called_on_success_path() -> None:
         drawing_number_confidence=0.95,
         title="Test Drawing",
         title_confidence=0.9,
-        document_type=DocumentType.DRAWING,
+        document_type=DocumentType.TECHNICAL_DRAWING,
         document_type_confidence=0.9,
     )
 
@@ -468,7 +468,7 @@ async def test_companion_validator_detects_empty_and_missing_drawing_number() ->
         drawing_number_confidence=0.9,
         title="Foundation Plan",
         title_confidence=0.85,
-        document_type=DocumentType.DRAWING,
+        document_type=DocumentType.TECHNICAL_DRAWING,
         document_type_confidence=0.9,
     )
 
@@ -703,7 +703,16 @@ def test_ijobrepository_protocol_has_update_job_result_and_branded_file_hash() -
 
     sig = inspect.signature(IJobRepository.get_job_by_file_hash)
     ann = sig.parameters["file_hash"].annotation
-    assert ann is FileHash or getattr(ann, "__name__", "") == "FileHash", (
+    # With `from __future__ import annotations`, annotations are strings
+    # (forward references). Accept either the real NewType, its __name__,
+    # or the forward-reference string "FileHash".
+    assert (
+        ann is FileHash
+        or getattr(ann, "__name__", "") == "FileHash"
+        or ann == "FileHash"
+    ), (
         f"IJobRepository.get_job_by_file_hash must use the branded "
         f"FileHash NewType (not bare 'str') for file_hash. Got: {ann!r}"
     )
+    # Prove FileHash is actually imported and distinct from bare str
+    assert FileHash is not str

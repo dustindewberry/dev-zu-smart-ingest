@@ -29,6 +29,22 @@ from zubot_ingestion.infrastructure.otel.instrumentation import (
 from zubot_ingestion.shared.constants import SERVICE_NAME, SERVICE_VERSION
 
 
+@pytest.fixture(autouse=True)
+def _reset_otel_global_state() -> None:
+    """Reset OTEL's global tracer-provider latch before each test.
+
+    ``trace.set_tracer_provider`` installs the provider exactly once per
+    process via a ``SET_ONCE`` latch; subsequent calls log a warning and
+    silently keep the first provider. Without this reset, every test
+    after the first would see stale state and fail on assertions about
+    the resource attributes or registered span processors.
+    """
+    from opentelemetry.util._once import Once
+
+    trace._TRACER_PROVIDER_SET_ONCE = Once()  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+
+
 class TestSetupOtelNoEndpoint:
     """setup_otel() called with otlp_endpoint=None."""
 
@@ -234,9 +250,13 @@ class TestLifespanWiring:
 
         get_settings.cache_clear()
 
+        # Also patch setup_logging so the lifespan handler doesn't try to
+        # mkdir the production log directory under /var/log/.
         with patch(
             "zubot_ingestion.api.app.setup_otel"
-        ) as mock_setup_otel:
+        ) as mock_setup_otel, patch(
+            "zubot_ingestion.api.app.setup_logging"
+        ):
             app = create_app()
             async with lifespan(app):
                 pass
@@ -261,7 +281,9 @@ class TestLifespanWiring:
 
         with patch(
             "zubot_ingestion.api.app.setup_otel"
-        ) as mock_setup_otel:
+        ) as mock_setup_otel, patch(
+            "zubot_ingestion.api.app.setup_logging"
+        ):
             app = create_app()
             async with lifespan(app):
                 pass

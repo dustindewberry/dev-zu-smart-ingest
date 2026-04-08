@@ -49,6 +49,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.trace import StatusCode
 
 from zubot_ingestion.domain.entities import (
+    CompanionResult,
     ConfidenceAssessment,
     ExtractionResult,
     Job,
@@ -262,6 +263,47 @@ class StubConfidenceCalculator:
         )
 
 
+class StubCompanionGenerator:
+    """No-op companion generator that returns an empty, ungenerated CompanionResult.
+
+    The orchestrator always calls ``generate`` and expects a valid
+    ``CompanionResult`` back — there is no "skipped" short-circuit path
+    inside the orchestrator itself, so the stub reports
+    ``companion_generated=False`` and ``pages_described=0`` to signal
+    a no-op run. The Stage 2 span is emitted with these values as
+    ``companion.generated`` / ``companion.pages_described`` attributes.
+    """
+
+    async def generate(
+        self,
+        context: PipelineContext,
+        extraction_result: ExtractionResult,
+    ) -> CompanionResult:
+        return CompanionResult(
+            companion_text="",
+            pages_described=0,
+            companion_generated=False,
+            validation_passed=True,
+            quality_score=None,
+        )
+
+
+class StubMetadataWriter:
+    """No-op metadata writer — always reports success."""
+
+    async def write_metadata(
+        self,
+        document_id: str,
+        sidecar: SidecarDocument,
+        deployment_id: int | None,
+        node_id: int | None,
+    ) -> bool:
+        return True
+
+    async def check_connection(self) -> bool:
+        return True
+
+
 def _make_orchestrator(
     *,
     pdf_processor: StubPDFProcessor | None = None,
@@ -270,6 +312,8 @@ def _make_orchestrator(
     doctype_extractor: StubExtractor | None = None,
     sidecar_builder: StubSidecarBuilder | None = None,
     confidence_calculator: StubConfidenceCalculator | None = None,
+    companion_generator: StubCompanionGenerator | None = None,
+    metadata_writer: StubMetadataWriter | None = None,
 ):
     # Imported lazily so each test runs against the per-fixture tracer
     # provider; the orchestrator captures get_tracer() at __init__ time.
@@ -285,6 +329,8 @@ def _make_orchestrator(
         confidence_calculator=confidence_calculator
         or StubConfidenceCalculator(),
         pdf_processor=pdf_processor or StubPDFProcessor(),
+        companion_generator=companion_generator or StubCompanionGenerator(),
+        metadata_writer=metadata_writer or StubMetadataWriter(),
     )
 
 
@@ -558,14 +604,18 @@ class TestStage1SpanAttributes:
 
 class TestStage2SpanAttributes:
     @pytest.mark.asyncio
-    async def test_stage2_span_marked_skipped(
+    async def test_stage2_span_marks_companion_not_generated(
         self, memory_exporter: InMemorySpanExporter, sample_job: Job
     ) -> None:
+        """Stub companion generator returns companion_generated=False; the
+        orchestrator writes that onto the Stage 2 span as
+        ``companion.generated`` plus a real inference.duration_ms."""
         orch = _make_orchestrator()
         await orch.run_pipeline(sample_job, b"%PDF-1.4 ...")
         span = _spans_by_name(memory_exporter)[OTEL_SPAN_STAGE2_COMPANION]
-        assert span.attributes["skipped"] is True
-        assert span.attributes["inference.duration_ms"] == 0
+        assert span.attributes["companion.generated"] is False
+        assert span.attributes["companion.pages_described"] == 0
+        assert "inference.duration_ms" in span.attributes
 
 
 class TestStage3SpanAttributes:

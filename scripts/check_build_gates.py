@@ -43,7 +43,10 @@ def main() -> int:
                 f"'{PLACEHOLDER_SENTINEL_OWNED_BY}'"
             )
         non_blank = [ln for ln in text.splitlines() if ln.strip()]
-        if len(non_blank) < 4:
+        # A canonical 3-line re-export __init__.py (docstring + import +
+        # __all__ assignment) is legitimate and must pass this gate. Only
+        # flag files with fewer than 3 non-blank lines as placeholder stubs.
+        if len(non_blank) < 3:
             errors.append(
                 f"[STUB] {rel} has only {len(non_blank)} non-blank lines "
                 f"(looks like a placeholder)"

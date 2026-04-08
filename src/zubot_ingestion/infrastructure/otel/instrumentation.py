@@ -110,6 +110,16 @@ def setup_otel(
         exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
+    # Make setup_otel truly idempotent per the docstring contract. OTEL's
+    # ``trace.set_tracer_provider`` uses a ``SET_ONCE`` latch under the
+    # hood and silently ignores subsequent calls once the global has been
+    # assigned. Reset the latch so that re-invoking setup_otel (e.g.
+    # during test fixtures or hot-reload) actually replaces the provider.
+    from opentelemetry.util._once import Once
+
+    trace._TRACER_PROVIDER_SET_ONCE = Once()  # type: ignore[attr-defined]
+    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+
     trace.set_tracer_provider(provider)
 
     _enable_auto_instrumentations()
