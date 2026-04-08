@@ -86,12 +86,15 @@ from zubot_ingestion.domain.entities import (
 )
 from zubot_ingestion.domain.enums import ConfidenceTier
 from zubot_ingestion.domain.protocols import (
+    ICallbackClient,
     ICompanionGenerator,
+    ICompanionValidator,
     IConfidenceCalculator,
     IExtractor,
     IMetadataWriter,
     IOrchestrator,
     IPDFProcessor,
+    ISearchIndexer,
     ISidecarBuilder,
 )
 from zubot_ingestion.infrastructure.metrics.prometheus import (
@@ -322,6 +325,9 @@ class ExtractionOrchestrator(IOrchestrator):
         companion_generator: ICompanionGenerator,
         metadata_writer: IMetadataWriter,
         *,
+        companion_validator: ICompanionValidator | None = None,
+        search_indexer: ISearchIndexer | None = None,
+        callback_client: ICallbackClient | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._drawing_number_extractor = drawing_number_extractor
@@ -332,6 +338,13 @@ class ExtractionOrchestrator(IOrchestrator):
         self._pdf_processor = pdf_processor
         self._companion_generator = companion_generator
         self._metadata_writer = metadata_writer
+        # CAP-018 / CAP-024 / CAP-025: optional downstream adapters.
+        # Each is ``None`` by default so existing test fixtures that
+        # construct ``ExtractionOrchestrator`` without the new
+        # parameters continue to work unchanged.
+        self._companion_validator = companion_validator
+        self._search_indexer = search_indexer
+        self._callback_client = callback_client
         self._log = logger or _LOG
         self._tracer = get_tracer()
 
@@ -342,6 +355,7 @@ class ExtractionOrchestrator(IOrchestrator):
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
     ) -> PipelineResult:
         """Execute the full extraction pipeline for a single job.
 
@@ -349,9 +363,14 @@ class ExtractionOrchestrator(IOrchestrator):
             job: The persisted :class:`Job` entity.
             pdf_bytes: Raw PDF file bytes loaded from temporary storage.
             deployment_id: Optional deployment id forwarded to the metadata
-                writer for ChromaDB collection routing.
+                writer for ChromaDB collection routing and to the search
+                indexer for per-deployment index routing.
             node_id: Optional node id forwarded to the metadata writer for
                 ChromaDB collection routing.
+            callback_url: Optional per-batch webhook URL forwarded from
+                ``Batch.callback_url``. When both this and the injected
+                :class:`ICallbackClient` are present, the orchestrator
+                POSTs a completion notification after the run finishes.
 
         The entire run is wrapped in a single ``OTEL_SPAN_BATCH`` root span
         and a single ``OTEL_SPAN_JOB`` child span. Each individual pipeline
@@ -616,10 +635,65 @@ class ExtractionOrchestrator(IOrchestrator):
                         )
                         companion_result = None
 
-                # Companion validation is owned by task-19; until that lands
-                # the confidence calculator receives ``None`` for the
-                # validation result.
+                # ----------------------------------------------------------
+                # Stage 2.5 — companion validation (CAP-018)
+                #
+                # Runs the companion text through the validator to produce
+                # a :class:`ValidationResult` that the confidence
+                # calculator can use to apply a validation adjustment.
+                # Guarded by try/except so a validator failure degrades to
+                # ``validation_result = None`` without aborting the run.
+                # ----------------------------------------------------------
                 validation_result = None
+                if (
+                    self._companion_validator is not None
+                    and companion_result is not None
+                ):
+                    validation_start = time.perf_counter()
+                    try:
+                        validation_result = (
+                            await self._companion_validator.validate(
+                                companion_result.companion_text or "",
+                                extraction_result,
+                            )
+                        )
+                        pipeline_trace["stages"]["validation"] = {
+                            "duration_ms": _elapsed_ms(validation_start),
+                            "ok": True,
+                            "is_valid": getattr(
+                                validation_result, "is_valid", None
+                            ),
+                            "confidence_penalty": getattr(
+                                validation_result,
+                                "confidence_penalty",
+                                None,
+                            ),
+                        }
+                    except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                        self._log.exception(
+                            "validation_failed",
+                            extra={"job_id": str(job.job_id)},
+                        )
+                        pipeline_trace["stages"]["validation"] = {
+                            "duration_ms": _elapsed_ms(validation_start),
+                            "ok": False,
+                            "error": _format_error(exc),
+                        }
+                        pipeline_trace["errors"].append(
+                            {
+                                "stage": "validation",
+                                "error": _format_error(exc),
+                            }
+                        )
+                        errors.append(
+                            PipelineError(
+                                stage="validation",
+                                error_type=type(exc).__name__,
+                                message=str(exc),
+                                recoverable=True,
+                            )
+                        )
+                        validation_result = None
 
                 # ----------------------------------------------------------
                 # Stage 3 — sidecar build
@@ -835,6 +909,184 @@ class ExtractionOrchestrator(IOrchestrator):
                         "ok": True,
                         "skipped": True,
                         "reason": "review_tier_routes_to_review_queue",
+                    }
+
+                # ----------------------------------------------------------
+                # Stage 4 — Elasticsearch companion indexing (CAP-024)
+                #
+                # AUTO and SPOT-tier results are indexed immediately so
+                # the companion text becomes full-text searchable. REVIEW
+                # tier is skipped — indexing happens after reviewer
+                # approval in a separate flow.
+                #
+                # Failures are tolerated: the indexer logs and returns
+                # False on error, and the orchestrator records the
+                # failure in pipeline_trace without raising.
+                # ----------------------------------------------------------
+                index_start = time.perf_counter()
+                if (
+                    self._search_indexer is not None
+                    and companion_result is not None
+                    and assessment.tier != ConfidenceTier.REVIEW
+                ):
+                    try:
+                        indexed = await self._search_indexer.index_companion(
+                            str(job.file_hash),
+                            extraction_result,
+                            companion_result,
+                            deployment_id,
+                        )
+                        pipeline_trace["stages"]["search_index"] = {
+                            "duration_ms": _elapsed_ms(index_start),
+                            "ok": bool(indexed),
+                            "skipped": False,
+                        }
+                        if not indexed:
+                            pipeline_trace["errors"].append(
+                                {
+                                    "stage": "search_index",
+                                    "error": "search_indexer.index_companion returned False",
+                                }
+                            )
+                            errors.append(
+                                PipelineError(
+                                    stage="search_index",
+                                    error_type="SearchIndexFailed",
+                                    message="search_indexer.index_companion returned False",
+                                    recoverable=True,
+                                )
+                            )
+                    except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                        self._log.exception(
+                            "search_index_failed",
+                            extra={"job_id": str(job.job_id)},
+                        )
+                        pipeline_trace["stages"]["search_index"] = {
+                            "duration_ms": _elapsed_ms(index_start),
+                            "ok": False,
+                            "skipped": False,
+                            "error": _format_error(exc),
+                        }
+                        pipeline_trace["errors"].append(
+                            {
+                                "stage": "search_index",
+                                "error": _format_error(exc),
+                            }
+                        )
+                        errors.append(
+                            PipelineError(
+                                stage="search_index",
+                                error_type=type(exc).__name__,
+                                message=str(exc),
+                                recoverable=True,
+                            )
+                        )
+                else:
+                    pipeline_trace["stages"]["search_index"] = {
+                        "duration_ms": 0,
+                        "ok": True,
+                        "skipped": True,
+                        "reason": (
+                            "no_search_indexer_configured"
+                            if self._search_indexer is None
+                            else "review_tier_or_no_companion"
+                        ),
+                    }
+
+                # ----------------------------------------------------------
+                # Stage 5 — webhook callback delivery (CAP-025)
+                #
+                # If both a callback client and a callback_url are
+                # supplied, POST a completion notification to the
+                # supplied URL. Guarded by try/except so a delivery
+                # failure never masks the pipeline result.
+                # ----------------------------------------------------------
+                callback_start = time.perf_counter()
+                if (
+                    self._callback_client is not None
+                    and callback_url is not None
+                ):
+                    try:
+                        tier_value = assessment.tier.value
+                        status_label = (
+                            "review"
+                            if tier_value == "review"
+                            else "completed"
+                        )
+                        delivered = (
+                            await self._callback_client.notify_completion(
+                                callback_url=callback_url,
+                                job_id=job.job_id,
+                                status=status_label,
+                                result={
+                                    "drawing_number": extraction_result.drawing_number,
+                                    "title": extraction_result.title,
+                                    "document_type": (
+                                        extraction_result.document_type.value
+                                        if extraction_result.document_type is not None
+                                        else None
+                                    ),
+                                    "confidence_score": assessment.overall_confidence,
+                                    "confidence_tier": tier_value,
+                                },
+                                error=None,
+                            )
+                        )
+                        pipeline_trace["stages"]["callback"] = {
+                            "duration_ms": _elapsed_ms(callback_start),
+                            "ok": bool(delivered),
+                            "skipped": False,
+                        }
+                        if not delivered:
+                            pipeline_trace["errors"].append(
+                                {
+                                    "stage": "callback",
+                                    "error": "callback_client.notify_completion returned False",
+                                }
+                            )
+                            errors.append(
+                                PipelineError(
+                                    stage="callback",
+                                    error_type="CallbackDeliveryFailed",
+                                    message="callback_client.notify_completion returned False",
+                                    recoverable=True,
+                                )
+                            )
+                    except Exception as exc:  # noqa: BLE001 - degrade gracefully
+                        self._log.exception(
+                            "callback_failed",
+                            extra={"job_id": str(job.job_id)},
+                        )
+                        pipeline_trace["stages"]["callback"] = {
+                            "duration_ms": _elapsed_ms(callback_start),
+                            "ok": False,
+                            "skipped": False,
+                            "error": _format_error(exc),
+                        }
+                        pipeline_trace["errors"].append(
+                            {
+                                "stage": "callback",
+                                "error": _format_error(exc),
+                            }
+                        )
+                        errors.append(
+                            PipelineError(
+                                stage="callback",
+                                error_type=type(exc).__name__,
+                                message=str(exc),
+                                recoverable=True,
+                            )
+                        )
+                else:
+                    pipeline_trace["stages"]["callback"] = {
+                        "duration_ms": 0,
+                        "ok": True,
+                        "skipped": True,
+                        "reason": (
+                            "no_callback_client_configured"
+                            if self._callback_client is None
+                            else "no_callback_url"
+                        ),
                     }
 
         # CAP-028: observe the total wall-clock and increment the

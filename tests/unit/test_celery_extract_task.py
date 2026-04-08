@@ -156,6 +156,7 @@ class FakeOrchestrator:
         self.last_pdf_bytes: bytes | None = None
         self.last_deployment_id: int | None = None
         self.last_node_id: int | None = None
+        self.last_callback_url: str | None = None
 
     async def run_pipeline(
         self,
@@ -164,12 +165,14 @@ class FakeOrchestrator:
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
     ) -> PipelineResult:
         self.calls += 1
         self.last_job = job
         self.last_pdf_bytes = pdf_bytes
         self.last_deployment_id = deployment_id
         self.last_node_id = node_id
+        self.last_callback_url = callback_url
         return self._result
 
 

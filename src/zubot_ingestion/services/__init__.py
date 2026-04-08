@@ -117,11 +117,27 @@ def build_orchestrator() -> "IOrchestrator":
         port=settings.CHROMADB_PORT,
     )
 
-    # NOTE: ExtractionOrchestrator.__init__ does NOT currently accept a
-    # ``companion_validator`` parameter. Per the task instructions we must
-    # NOT modify the orchestrator constructor signature in this change —
-    # a follow-up task will wire ``build_companion_validator()`` into the
-    # orchestrator once its constructor accepts it.
+    # CAP-018 / CAP-024 / CAP-025: construct and inject the three
+    # previously-unwired downstream adapters. Each factory is guarded by
+    # a try/except so a misconfigured ElasticsearchSearchIndexer URL (for
+    # example) does not prevent the orchestrator from building — the
+    # orchestrator treats each adapter as optional and degrades
+    # gracefully if it is not present.
+    try:
+        companion_validator = build_companion_validator()
+    except Exception:  # noqa: BLE001 - degrade gracefully
+        companion_validator = None  # type: ignore[assignment]
+
+    try:
+        search_indexer = build_search_indexer()
+    except Exception:  # noqa: BLE001 - degrade gracefully
+        search_indexer = None  # type: ignore[assignment]
+
+    try:
+        callback_client = build_callback_client()
+    except Exception:  # noqa: BLE001 - degrade gracefully
+        callback_client = None  # type: ignore[assignment]
+
     return ExtractionOrchestrator(
         drawing_number_extractor=drawing_number_extractor,
         title_extractor=title_extractor,
@@ -131,6 +147,9 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         companion_generator=companion_generator,
         metadata_writer=metadata_writer,
+        companion_validator=companion_validator,
+        search_indexer=search_indexer,
+        callback_client=callback_client,
     )
 
 
@@ -194,12 +213,16 @@ def build_companion_validator() -> "CompanionValidator":
 def build_search_indexer() -> "ElasticsearchSearchIndexer":
     """Construct an :class:`ElasticsearchSearchIndexer` (CAP-024 / step-21).
 
-    The indexer is configured from ``settings.ELASTICSEARCH_URL`` and
-    ``settings.ELASTICSEARCH_INDEX`` if those settings are present on
-    the :class:`Settings` class; otherwise sensible localhost defaults
-    are used. Callers (orchestrator, Celery task layer) should treat
-    this as a per-request client — the underlying HTTP session is
-    cheap to create.
+    The indexer is configured from ``settings.ELASTICSEARCH_URL`` if
+    present on the :class:`Settings` class; otherwise a sensible
+    localhost default is used. Optional HTTP basic auth can be supplied
+    via ``settings.ELASTICSEARCH_USERNAME`` / ``ELASTICSEARCH_PASSWORD``.
+
+    Index name routing is handled inside the adapter via
+    ``_index_name_for(deployment_id)`` — there is NO ``index``
+    constructor kwarg on :class:`ElasticsearchSearchIndexer`. Callers
+    (orchestrator, Celery task layer) should treat this as a per-request
+    client — the underlying HTTP session is cheap to create.
     """
     from zubot_ingestion.config import get_settings
     from zubot_ingestion.infrastructure.elasticsearch import (
@@ -209,7 +232,8 @@ def build_search_indexer() -> "ElasticsearchSearchIndexer":
     settings = get_settings()
     return ElasticsearchSearchIndexer(
         base_url=getattr(settings, "ELASTICSEARCH_URL", "http://localhost:9200"),
-        index=getattr(settings, "ELASTICSEARCH_INDEX", "companions"),
+        username=getattr(settings, "ELASTICSEARCH_USERNAME", None),
+        password=getattr(settings, "ELASTICSEARCH_PASSWORD", None),
     )
 
 

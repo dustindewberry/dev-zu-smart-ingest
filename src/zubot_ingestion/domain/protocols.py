@@ -316,6 +316,7 @@ class IOrchestrator(Protocol):
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
     ) -> PipelineResult:
         """Execute the complete extraction pipeline.
 
@@ -323,6 +324,8 @@ class IOrchestrator(Protocol):
         1. Extract: Drawing number, title, document type from vision+text+filename
         2. Companion: Multi-page visual description (if visual PDF)
         3. Sidecar: Merge results into Bedrock KB format
+        4. Search index: Index companion into Elasticsearch (CAP-024)
+        5. Callback: POST completion notification to per-batch URL (CAP-025)
 
         Handles stage failures gracefully — partial results are preserved.
         Records OTEL spans for each stage.
@@ -331,9 +334,14 @@ class IOrchestrator(Protocol):
             job: Job entity with metadata
             pdf_bytes: Raw PDF file bytes
             deployment_id: Optional Zutec deployment ID forwarded to the
-                metadata writer for ChromaDB collection routing.
+                metadata writer for ChromaDB collection routing and to
+                the search indexer for per-deployment index routing.
             node_id: Optional Zutec node ID forwarded to the metadata
                 writer alongside ``deployment_id``.
+            callback_url: Optional per-batch webhook URL forwarded from
+                ``Batch.callback_url``. When both this and an injected
+                ``ICallbackClient`` are present, the orchestrator POSTs a
+                completion notification after the run finishes.
 
         Returns:
             PipelineResult with extraction_result, companion_text, sidecar,
@@ -812,15 +820,14 @@ class IJobRepository(Protocol):
 
     async def update_job_result(
         self,
-        job_id: JobId,
-        *,
+        job_id: UUID,
         result: dict[str, Any],
         confidence_tier: ConfidenceTier,
         confidence_score: float,
         processing_time_ms: int,
-        otel_trace_id: str | None,
-        pipeline_trace: dict[str, Any] | None,
-    ) -> None:
+        otel_trace_id: str | None = None,
+        pipeline_trace: dict[str, Any] | None = None,
+    ) -> Job | None:
         """Persist a completed job's extraction result and indexed columns.
 
         Writes the JSONB ``result`` blob AND the dedicated indexed columns
@@ -831,8 +838,15 @@ class IJobRepository(Protocol):
         dashboards — writing only ``update_job_status(result=...)`` leaves
         them NULL and breaks those downstream consumers.
 
+        Signature aligned to the canonical
+        :class:`~zubot_ingestion.infrastructure.database.repository.JobRepository`
+        adapter: ``job_id`` is a plain ``UUID`` (matching the database
+        layer), the trailing trace fields carry ``None`` defaults, and the
+        return type is ``Job | None`` so the caller can chain on the
+        refreshed row without re-querying.
+
         Args:
-            job_id: Branded ``JobId`` of the job to update
+            job_id: UUID of the job to update
             result: Full extraction result payload (JSONB blob)
             confidence_tier: ``ConfidenceTier`` assigned by the confidence
                 calculator (AUTO / SPOT / REVIEW)
@@ -841,6 +855,10 @@ class IJobRepository(Protocol):
             otel_trace_id: OpenTelemetry trace ID for this job's pipeline run
                 (hex string, or ``None`` if tracing was disabled)
             pipeline_trace: Structured per-stage trace dict, or ``None``
+
+        Returns:
+            The refreshed ``Job`` entity on success, or ``None`` if no row
+            matched ``job_id``.
         """
         ...
 
@@ -913,26 +931,44 @@ class IMetadataWriter(Protocol):
 
 @runtime_checkable
 class ISearchIndexer(Protocol):
-    """Search indexer interface for companion document indexing (§4.19)."""
+    """Search indexer interface for companion document indexing (§4.19).
+
+    Signature aligned to the canonical
+    :class:`~zubot_ingestion.infrastructure.elasticsearch.ElasticsearchSearchIndexer`
+    adapter: index routing is derived inside the adapter from
+    ``deployment_id`` via ``_index_name_for``, and the adapter builds
+    its document payload directly from the rich :class:`ExtractionResult`
+    and :class:`CompanionResult` domain dataclasses so callers never have
+    to flatten them into a plain ``metadata`` dict at the call site.
+    """
 
     async def index_companion(
         self,
-        *,
-        job_id: JobId,
-        companion_text: str,
-        metadata: dict[str, Any],
-    ) -> None:
+        document_id: str,
+        extraction_result: ExtractionResult,
+        companion_result: CompanionResult,
+        deployment_id: int | None,
+    ) -> bool:
         """Index a companion document in the full-text search store.
 
         Args:
-            job_id: Branded ``JobId`` of the originating extraction job
-            companion_text: Generated visual description text to index
-            metadata: Structured metadata to attach (drawing_number, title,
-                document_type, deployment_id, node_id, etc.)
+            document_id: Unique document identifier (typically
+                ``str(job.file_hash)``)
+            extraction_result: Stage 1 extraction result (drawing_number,
+                title, document_type, discipline, revision, ...)
+            companion_result: Stage 2 companion result (companion_text,
+                pages_described, quality_score, ...)
+            deployment_id: Deployment ID used for index routing
+                (``zubot_companion_{deployment_id}``) or ``None`` for the
+                default index.
+
+        Returns:
+            True if the index write succeeded, False on any error so
+            callers can degrade gracefully without aborting the pipeline.
         """
         ...
 
-    async def health_check(self) -> bool:
+    async def check_connection(self) -> bool:
         """Check search store connection health.
 
         Returns:
