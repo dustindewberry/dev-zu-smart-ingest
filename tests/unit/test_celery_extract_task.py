@@ -11,12 +11,12 @@ expectations AFTER the task runs — per the worker-agent guidance:
 
 from __future__ import annotations
 
-import asyncio
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
-from uuid import UUID, uuid4
+from typing import Any, AsyncIterator
 from unittest.mock import patch
+from uuid import UUID, uuid4
 
 import pytest
 
@@ -46,11 +46,12 @@ from zubot_ingestion.shared.types import BatchId, FileHash, JobId
 
 
 class FakeRepository:
-    """In-memory repository that records every update_job_status call."""
+    """In-memory repository that records every mutation call."""
 
     def __init__(self, job: Job) -> None:
         self._job = job
         self.update_calls: list[dict[str, Any]] = []
+        self.update_result_calls: list[dict[str, Any]] = []
 
     async def get_job(self, job_id: UUID) -> Job | None:
         if job_id == self._job.job_id:
@@ -82,6 +83,56 @@ class FakeRepository:
                 "error_message": error_message,
             }
         )
+
+    async def update_job_result(
+        self,
+        *,
+        job_id: UUID,
+        result: dict[str, Any],
+        confidence_tier: ConfidenceTier,
+        confidence_score: float,
+        processing_time_ms: int,
+        otel_trace_id: str | None = None,
+        pipeline_trace: dict[str, Any] | None = None,
+    ) -> None:
+        self.update_result_calls.append(
+            {
+                "job_id": job_id,
+                "result": result,
+                "confidence_tier": confidence_tier,
+                "confidence_score": confidence_score,
+                "processing_time_ms": processing_time_ms,
+                "otel_trace_id": otel_trace_id,
+                "pipeline_trace": pipeline_trace,
+            }
+        )
+        # update_job_result marks the row COMPLETED on the real repo.
+        self.update_calls.append(
+            {
+                "job_id": job_id,
+                "status": JobStatus.COMPLETED,
+                "result": result,
+                "error_message": None,
+            }
+        )
+
+
+def _patch_get_job_repository(repo: FakeRepository) -> Any:
+    """Return a patcher that makes ``get_job_repository`` yield ``repo``.
+
+    The factory is now an ``@asynccontextmanager``, so tests need to patch
+    it with a replacement that ALSO yields the fake repository via
+    ``async with``.
+    """
+
+    @asynccontextmanager
+    async def _fake_factory() -> AsyncIterator[FakeRepository]:
+        yield repo
+
+    return patch(
+        "zubot_ingestion.services.get_job_repository",
+        side_effect=lambda: _fake_factory(),
+    )
 
 
 class FakeOrchestrator:
@@ -204,9 +255,8 @@ async def test_run_extract_document_task_persists_completed_for_auto_tier(
     )
     orchestrator = FakeOrchestrator(pipeline_result)
 
-    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), patch(
-        "zubot_ingestion.services.get_job_repository", return_value=repo
-    ), patch(
+    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
+            _patch_get_job_repository(repo), patch(
         "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
@@ -217,7 +267,10 @@ async def test_run_extract_document_task_persists_completed_for_auto_tier(
     assert result["confidence_tier"] == "auto"
     assert result["confidence_score"] == pytest.approx(0.85)
 
-    # Repository mutations — verify state AFTER the task runs
+    # Repository mutations — verify state AFTER the task runs.
+    # Expected sequence: PROCESSING (pre-pipeline), COMPLETED (from
+    # update_job_result's implicit COMPLETED write). REVIEW tier adds a
+    # third REVIEW write on top.
     assert len(repo.update_calls) == 2
     first, second = repo.update_calls
 
@@ -226,7 +279,7 @@ async def test_run_extract_document_task_persists_completed_for_auto_tier(
     assert first["result"] is None
     assert first["error_message"] is None
 
-    # Second call: mark COMPLETED with the full result payload
+    # Second call: COMPLETED via update_job_result
     assert second["status"] == JobStatus.COMPLETED
     assert second["error_message"] is None
     payload = second["result"]
@@ -238,6 +291,15 @@ async def test_run_extract_document_task_persists_completed_for_auto_tier(
     assert payload["confidence_tier"] == "auto"
     assert "sidecar" in payload
     assert "pipeline_trace" in payload
+
+    # update_job_result was called with the indexed fields
+    assert len(repo.update_result_calls) == 1
+    r = repo.update_result_calls[0]
+    assert r["confidence_tier"] == ConfidenceTier.AUTO
+    assert r["confidence_score"] == pytest.approx(0.85)
+    assert isinstance(r["processing_time_ms"], int)
+    assert r["otel_trace_id"] is None
+    assert r["pipeline_trace"] == pipeline_result.pipeline_trace
 
     # Orchestrator received the right job and the PDF bytes from disk
     assert orchestrator.calls == 1
@@ -260,9 +322,8 @@ async def test_run_extract_document_task_persists_review_tier_as_review_status(
     )
     orchestrator = FakeOrchestrator(pipeline_result)
 
-    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), patch(
-        "zubot_ingestion.services.get_job_repository", return_value=repo
-    ), patch(
+    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
+            _patch_get_job_repository(repo), patch(
         "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
@@ -271,6 +332,10 @@ async def test_run_extract_document_task_persists_review_tier_as_review_status(
     # Final status in repo is REVIEW
     final = repo.update_calls[-1]
     assert final["status"] == JobStatus.REVIEW
+    # update_job_result still called — indexed columns must be populated
+    # regardless of tier so metrics remain accurate.
+    assert len(repo.update_result_calls) == 1
+    assert repo.update_result_calls[0]["confidence_tier"] == ConfidenceTier.REVIEW
 
 
 async def test_run_extract_document_task_persists_spot_tier_as_completed(
@@ -288,9 +353,8 @@ async def test_run_extract_document_task_persists_spot_tier_as_completed(
     )
     orchestrator = FakeOrchestrator(pipeline_result)
 
-    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), patch(
-        "zubot_ingestion.services.get_job_repository", return_value=repo
-    ), patch(
+    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
+            _patch_get_job_repository(repo), patch(
         "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
@@ -316,9 +380,8 @@ async def test_run_extract_document_task_raises_lookup_error_when_job_missing(
     )
     bogus_id = uuid4()
 
-    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), patch(
-        "zubot_ingestion.services.get_job_repository", return_value=repo
-    ), patch(
+    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
+            _patch_get_job_repository(repo), patch(
         "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
     ):
         with pytest.raises(LookupError, match="not found"):
@@ -329,12 +392,18 @@ async def test_run_extract_document_task_raises_lookup_error_when_job_missing(
 
 
 async def test_mark_job_failed_persists_failed_status_with_error_message() -> None:
-    """_mark_job_failed must update the repo to FAILED with the error text."""
+    """_mark_job_failed must update the repo to FAILED with the error text.
+
+    The cleanup helper now acquires its own repository via the async
+    ``get_job_repository`` context manager, so the test patches that
+    factory to hand the helper a fake repository.
+    """
     job = _build_job()
     repo = FakeRepository(job)
     exc = ValueError("boom")
 
-    await _mark_job_failed(repo, job.job_id, exc)
+    with _patch_get_job_repository(repo):
+        await _mark_job_failed(job.job_id, exc)
 
     assert len(repo.update_calls) == 1
     call = repo.update_calls[0]
@@ -354,9 +423,8 @@ async def test_run_extract_document_task_missing_pdf_file_raises(
         _build_pipeline_result(score=0.85, tier=ConfidenceTier.AUTO)
     )
 
-    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), patch(
-        "zubot_ingestion.services.get_job_repository", return_value=repo
-    ), patch(
+    with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
+            _patch_get_job_repository(repo), patch(
         "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
     ):
         with pytest.raises(FileNotFoundError):
