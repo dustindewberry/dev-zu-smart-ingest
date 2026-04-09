@@ -95,6 +95,18 @@ class Settings(BaseSettings):
     # this value (e.g. POST /extract uses 20/minute).
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
+    # ------------------------------------------------------------------ #
+    # Celery worker tuning                                               #
+    # ------------------------------------------------------------------ #
+    # Concurrency and prefetch settings applied to the Celery app via
+    # ``app.conf.update(worker_concurrency=..., worker_prefetch_multiplier=...)``
+    # so that they can be scaled at deploy time via environment variables
+    # (e.g. a T4 appliance overlay raising concurrency to 4) without
+    # editing docker-compose command args. Defaults preserve the
+    # hardcoded behaviour that previously lived in docker-compose.yml.
+    CELERY_WORKER_CONCURRENCY: int = 2
+    CELERY_WORKER_PREFETCH_MULTIPLIER: int = 1
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
