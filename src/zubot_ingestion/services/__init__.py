@@ -76,7 +76,14 @@ def build_orchestrator() -> "IOrchestrator":
     settings = get_settings()
 
     pdf_processor = PyMuPDFProcessor()
-    ollama_client = OllamaClient(base_url=settings.OLLAMA_HOST)
+    # Pool limits + retry budget flow through the shared Settings
+    # instance constructed above — OllamaClient reads the pool /
+    # timeout / retry fields directly from it so operators can scale
+    # the client via environment variables alone.
+    ollama_client = OllamaClient(
+        base_url=settings.OLLAMA_HOST,
+        settings=settings,
+    )
     response_parser = JsonResponseParser()
     filename_parser = FilenameParser()
 
