@@ -42,7 +42,7 @@ _DRAWING_NUMBER_PATTERNS: tuple[tuple[re.Pattern[str], str, float], ...] = (
     (re.compile(r"(DWG-\d+)"), "dwg_prefix", 0.70),
 )
 
-_REVISION_PATTERN: re.Pattern[str] = re.compile(r"Rev\s*([A-Z]?\d{2})", re.IGNORECASE)
+_REVISION_PATTERN: re.Pattern[str] = re.compile(r"Rev[\s_]*([A-Z]?\d{2})", re.IGNORECASE)
 
 # Discipline keyword → enum value. The check is case-insensitive and runs
 # against each path segment AND the filename stem.
@@ -110,12 +110,20 @@ def _match_revision(text: str) -> str | None:
 
 
 def _infer_discipline(filename: str) -> Discipline | None:
-    """Infer discipline from path segments OR the filename stem."""
+    """Infer discipline from path segments OR the filename stem.
+
+    Uses a bidirectional match so short path segments like ``elec/`` match
+    against full discipline keywords like ``electrical``. The length floor
+    of 3 characters prevents single-letter false positives.
+    """
     segments_lower = [seg.lower() for seg in _split_path_segments(filename)]
     stem_lower = _stem(filename).lower()
     haystacks = [*segments_lower, stem_lower]
     for keyword, discipline in _DISCIPLINE_KEYWORDS:
-        if any(keyword in h for h in haystacks):
+        if any(
+            keyword in h or (len(h) >= 3 and keyword.startswith(h))
+            for h in haystacks
+        ):
             return discipline
     return None
 

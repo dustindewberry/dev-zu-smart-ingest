@@ -85,34 +85,45 @@ def test_defaults_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.RATE_LIMIT_DEFAULT == "100/minute"
 
 
-def test_required_database_url_missing_fails(
+def test_database_url_has_localhost_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # DATABASE_URL has a localhost default so dev and CI runs work without
+    # an explicit env var. Production operators are expected to override
+    # via ``.env`` or the docker-compose file. This is an intentional
+    # trade-off documented in config.py — the ``database_url`` property
+    # alias depends on this default being a valid string.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("ZUBOT_INGESTION_API_KEY", "k")
     monkeypatch.setenv("WOD_JWT_SECRET", "s")
-    with pytest.raises(ValidationError) as ei:
-        Settings()  # type: ignore[call-arg]
-    assert "DATABASE_URL" in str(ei.value)
+    s = Settings()  # type: ignore[call-arg]
+    assert "postgresql+asyncpg://" in s.DATABASE_URL
+    assert "localhost" in s.DATABASE_URL
 
 
-def test_required_api_key_missing_fails(
+def test_api_key_defaults_to_empty_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # ZUBOT_INGESTION_API_KEY uses an empty-string default; startup code in
+    # the auth middleware treats "" as "no key configured" and fails auth
+    # for every request. Production deploys override via env.
+    monkeypatch.delenv("ZUBOT_INGESTION_API_KEY", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/d")
     monkeypatch.setenv("WOD_JWT_SECRET", "s")
-    with pytest.raises(ValidationError) as ei:
-        Settings()  # type: ignore[call-arg]
-    assert "ZUBOT_INGESTION_API_KEY" in str(ei.value)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.ZUBOT_INGESTION_API_KEY == ""
 
 
-def test_required_jwt_secret_missing_fails(
+def test_jwt_secret_defaults_to_empty_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # WOD_JWT_SECRET uses an empty-string default for the same reason as
+    # ZUBOT_INGESTION_API_KEY. Production deploys override via env.
+    monkeypatch.delenv("WOD_JWT_SECRET", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/d")
     monkeypatch.setenv("ZUBOT_INGESTION_API_KEY", "k")
-    with pytest.raises(ValidationError) as ei:
-        Settings()  # type: ignore[call-arg]
-    assert "WOD_JWT_SECRET" in str(ei.value)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.WOD_JWT_SECRET == ""
 
 
 def test_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

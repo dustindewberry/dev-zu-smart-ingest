@@ -27,6 +27,7 @@ from zubot_ingestion.services.job_service import (
     InvalidPDFError,
     JobService,
     MAX_PDF_BYTES,
+    NotFoundError,
     OversizeFileError,
 )
 from zubot_ingestion.shared.types import (
@@ -458,7 +459,10 @@ async def test_get_job_returns_job_detail(service, auth_context):
 @pytest.mark.asyncio
 async def test_get_job_returns_none_for_unknown(service, auth_context):
     svc, *_ = service
-    assert await svc.get_job(uuid4(), auth_context) is None
+    # Unknown job IDs raise NotFoundError; the API layer translates this
+    # into an HTTP 404 response.
+    with pytest.raises(NotFoundError):
+        await svc.get_job(uuid4(), auth_context)
 
 
 @pytest.mark.asyncio
@@ -485,7 +489,10 @@ async def test_get_batch_returns_batch_with_jobs_dto(service, auth_context):
 @pytest.mark.asyncio
 async def test_get_batch_returns_none_for_unknown(service, auth_context):
     svc, *_ = service
-    assert await svc.get_batch(uuid4(), auth_context) is None
+    # Unknown batch IDs raise NotFoundError; the API layer translates this
+    # into an HTTP 404 response.
+    with pytest.raises(NotFoundError):
+        await svc.get_batch(uuid4(), auth_context)
 
 
 def test_default_storage_root_constant():

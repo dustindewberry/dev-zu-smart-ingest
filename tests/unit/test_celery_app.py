@@ -107,11 +107,23 @@ def test_extract_document_task_name_matches_constant() -> None:
     assert celery_mod.extract_document_task.name == CELERY_TASK_NAME_EXTRACTION
 
 
-def test_extract_document_task_raises_not_implemented() -> None:
-    # Run the task body synchronously. The @task decorator injects ``self``
-    # as the task instance, so call via .run() to mimic Celery's invocation.
-    with pytest.raises(NotImplementedError, match="step-16"):
-        celery_mod.extract_document_task.run("00000000-0000-0000-0000-000000000000")
+def test_extract_document_task_is_implemented() -> None:
+    # The extract_document_task body was originally stubbed with
+    # ``NotImplementedError("step-16")``; the canonical implementation
+    # landed in a later step and now invokes the full pipeline. This
+    # assertion pins the fact that the task is no longer a stub by
+    # checking that the task function does NOT raise NotImplementedError
+    # synchronously at the very top of its body (i.e. the stub is gone).
+    # We can't easily run the full task in a unit test without a live
+    # Postgres + the full adapter wiring — the celery-extract-task
+    # integration test covers the happy path.
+    import inspect
+
+    source = inspect.getsource(celery_mod.extract_document_task.run)
+    assert "NotImplementedError" not in source, (
+        "extract_document_task is still stubbed with NotImplementedError — "
+        "step-16 must have landed for the canonical implementation to exist"
+    )
 
 
 def test_extract_document_task_retry_policy() -> None:

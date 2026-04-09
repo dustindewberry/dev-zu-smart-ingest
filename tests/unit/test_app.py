@@ -57,19 +57,34 @@ def test_global_exception_handler_registered() -> None:
     assert Exception in app.exception_handlers
 
 
-def test_no_business_routes_registered() -> None:
-    """Step-4 must not mount any routers — those land in later steps."""
+def test_expected_business_routes_registered() -> None:
+    """The merged codebase wires the full set of business routers: /health,
+    /metrics, /extract, /batches/{batch_id}, /jobs/{job_id}, and the
+    /review/* queue endpoints. This test documents that wiring so a
+    regression (missing router include) is caught immediately.
+
+    The original step-4 version of this test asserted that NO business
+    routes were registered because routers were still pending; that
+    assertion is obsolete after the later steps landed.
+    """
     app = create_app()
-    business_paths = {
+    registered = {
         r.path  # type: ignore[attr-defined]
         for r in app.routes
         if hasattr(r, "path")
-        and r.path  # type: ignore[attr-defined]
-        not in {"/openapi.json", "/docs", "/redoc", "/docs/oauth2-redirect"}
     }
-    assert business_paths == set(), (
-        f"Step 4 should register only docs routes; found extras: {business_paths}"
-    )
+    expected = {
+        "/health",
+        "/metrics",
+        "/extract",
+        "/batches/{batch_id}",
+        "/jobs/{job_id}",
+        "/review/pending",
+        "/review/{job_id}/approve",
+        "/review/{job_id}/reject",
+    }
+    missing = expected - registered
+    assert not missing, f"Missing expected business routes: {missing}"
 
 
 def test_docs_endpoint_serves_html() -> None:
@@ -88,9 +103,18 @@ def test_openapi_schema_reflects_metadata() -> None:
     assert schema["info"]["version"] == SERVICE_VERSION
 
 
-def test_unhandled_exception_returns_json_500() -> None:
+def test_unhandled_exception_returns_json_500(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """A route that raises ``Exception`` must be caught by the handler and
-    serialized as a JSON 500 — never as a stack trace."""
+    serialized as a JSON 500 — never as a stack trace. The AuthMiddleware
+    runs before the exception handler, so we must provide a valid API key
+    header on the request to reach the /boom route."""
+    monkeypatch.setenv("ZUBOT_INGESTION_API_KEY", "test-api-key")
+    from zubot_ingestion.config import get_settings
+
+    get_settings.cache_clear()
+
     app = create_app()
 
     @app.get("/_boom")  # registered locally for this test only
@@ -98,11 +122,13 @@ def test_unhandled_exception_returns_json_500() -> None:
         raise RuntimeError("kaboom")
 
     with TestClient(app, raise_server_exceptions=False) as client:
-        resp = client.get("/_boom")
+        resp = client.get("/_boom", headers={"X-API-Key": "test-api-key"})
     assert resp.status_code == 500
     body = resp.json()
     assert body["error"] == "internal_server_error"
     assert "message" in body
+
+    get_settings.cache_clear()
 
 
 @pytest.mark.asyncio
