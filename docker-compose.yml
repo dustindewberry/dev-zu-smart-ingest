@@ -54,13 +54,18 @@ services:
     image: zubot-ingestion:latest
     container_name: zubot-ingestion-worker
     restart: unless-stopped
+    # Concurrency and prefetch are NOT passed as CLI flags. They are
+    # resolved from Settings (CELERY_WORKER_CONCURRENCY /
+    # CELERY_WORKER_PREFETCH_MULTIPLIER env vars below) and applied to
+    # app.conf at boot inside zubot_ingestion.services.celery_app, so
+    # operators can override them via an overlay (e.g.
+    # docker-compose.t4.yml) without editing the command array.
     command:
       - celery
       - -A
       - zubot_ingestion.services.celery_app
       - worker
       - --loglevel=info
-      - --concurrency=2
     env_file:
       - .env
     environment:
@@ -71,6 +76,8 @@ services:
       ELASTICSEARCH_URL: http://host.docker.internal:9200
       OTEL_EXPORTER_OTLP_ENDPOINT: http://host.docker.internal:4317
       DATABASE_URL: postgresql+asyncpg://zubot:zubot_dev@postgres:5432/zubot_ingestion
+      CELERY_WORKER_CONCURRENCY: "2"
+      CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
     depends_on:
       postgres:
         condition: service_healthy

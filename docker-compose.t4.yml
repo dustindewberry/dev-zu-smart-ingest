@@ -1,0 +1,60 @@
+# docker-compose.t4.yml — T4 appliance overlay for zubot-ingestion
+#
+# This overlay tunes the zubot-ingestion worker and (indirectly) the
+# co-located Ollama service for a single-box "appliance" deployment
+# on a Tesla T4 (16 GB VRAM). It is intended to be layered ON TOP OF
+# the base docker-compose.yml using the standard Compose -f stacking
+# rules:
+#
+#     docker compose -f docker-compose.yml -f docker-compose.t4.yml up
+#
+# Every value here is a pure environment-variable override — the base
+# stack structure (services, networks, volumes, healthchecks, ports) is
+# reused as-is. Removing this file reverts to the default behaviour.
+#
+# T4 tuning rationale (see README.md "Hardware procurement" section for
+# the long version):
+#
+#   * Vision model stays at qwen2.5vl:7b @ Q4_K_M (no quality regression
+#     beyond quantization, fits in ~6 GB VRAM).
+#   * Text model drops to qwen2.5:3b so both models co-reside on the T4
+#     with room for a 2-slot parallel request queue and KV cache.
+#   * OLLAMA_NUM_PARALLEL=2 lets the three Stage-1 vision extractors
+#     overlap two-at-a-time instead of serializing.
+#   * OLLAMA_KEEP_ALIVE=24h pins both models in VRAM so a quiet period
+#     doesn't trigger a multi-second reload on the next request.
+#   * Celery concurrency doubles from 2 -> 4 so the API can saturate the
+#     two Ollama parallel slots even when half the workers are idle on
+#     DB / I/O. Prefetch stays at 1 (long tasks, no batching).
+#   * Companion-page skip enabled at 150 words: Stage-2 companion calls
+#     are expensive on a T4 with only 2 parallel slots, and pages with
+#     >=150 words of extracted text rarely need vision enrichment.
+#   * HTTP pool widened to 20 / 10 to avoid connection churn under the
+#     higher Celery concurrency.
+
+services:
+  zubot-ingestion-worker:
+    environment:
+      CELERY_WORKER_CONCURRENCY: "4"
+      CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_KEEP_ALIVE: "24h"
+      OLLAMA_TEXT_MODEL: "qwen2.5:3b"
+      OLLAMA_VISION_MODEL: "qwen2.5vl:7b"
+      COMPANION_SKIP_ENABLED: "true"
+      COMPANION_SKIP_MIN_WORDS: "150"
+      OLLAMA_HTTP_POOL_MAX_CONNECTIONS: "20"
+      OLLAMA_HTTP_POOL_MAX_KEEPALIVE: "10"
+
+  zubot-ingestion:
+    environment:
+      CELERY_WORKER_CONCURRENCY: "4"
+      CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
+      OLLAMA_NUM_PARALLEL: "2"
+      OLLAMA_KEEP_ALIVE: "24h"
+      OLLAMA_TEXT_MODEL: "qwen2.5:3b"
+      OLLAMA_VISION_MODEL: "qwen2.5vl:7b"
+      COMPANION_SKIP_ENABLED: "true"
+      COMPANION_SKIP_MIN_WORDS: "150"
+      OLLAMA_HTTP_POOL_MAX_CONNECTIONS: "20"
+      OLLAMA_HTTP_POOL_MAX_KEEPALIVE: "10"
