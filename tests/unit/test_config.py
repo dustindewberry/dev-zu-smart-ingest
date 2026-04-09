@@ -32,6 +32,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         "CHROMADB_HOST",
         "CHROMADB_PORT",
         "ELASTICSEARCH_URL",
+        "ELASTICSEARCH_USERNAME",
+        "ELASTICSEARCH_PASSWORD",
+        "ELASTICSEARCH_TIMEOUT",
+        "ELASTICSEARCH_VERIFY_CERTS",
+        "CALLBACK_ENABLED",
+        "CALLBACK_SIGNING_SECRET",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "ZUBOT_INGESTION_API_KEY",
         "WOD_JWT_SECRET",
@@ -62,7 +68,16 @@ def test_defaults_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.OLLAMA_HOST == "http://ollama:11434"
     assert s.CHROMADB_HOST == "chromadb"
     assert s.CHROMADB_PORT == 8000
-    assert s.ELASTICSEARCH_URL == "http://elasticsearch:9200"
+    # ELASTICSEARCH_URL is now an optional setting (None by default) so the
+    # Elasticsearch adapter can degrade to a no-op in dev/CI.
+    assert s.ELASTICSEARCH_URL is None
+    assert s.ELASTICSEARCH_USERNAME is None
+    assert s.ELASTICSEARCH_PASSWORD is None
+    assert s.ELASTICSEARCH_TIMEOUT == 10.0
+    assert s.ELASTICSEARCH_VERIFY_CERTS is True
+    # Callback delivery is disabled by default (CAP-025).
+    assert s.CALLBACK_ENABLED is False
+    assert s.CALLBACK_SIGNING_SECRET is None
     assert s.OTEL_EXPORTER_OTLP_ENDPOINT == "http://phoenix:4317"
     assert s.LOG_LEVEL == "INFO"
     assert s.LOG_DIR == "/var/log/zubot-ingestion"

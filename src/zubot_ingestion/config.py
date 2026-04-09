@@ -43,7 +43,24 @@ class Settings(BaseSettings):
     OLLAMA_HOST: str = "http://ollama:11434"
     CHROMADB_HOST: str = "chromadb"
     CHROMADB_PORT: int = 8000
-    ELASTICSEARCH_URL: str = "http://elasticsearch:9200"
+
+    # ------------------------------------------------------------------ #
+    # Elasticsearch (CAP-024) — optional, no-op when ELASTICSEARCH_URL    #
+    # is unset so local dev and CI still run without an ES instance.     #
+    # ------------------------------------------------------------------ #
+    ELASTICSEARCH_URL: str | None = None
+    ELASTICSEARCH_USERNAME: str | None = None
+    ELASTICSEARCH_PASSWORD: str | None = None
+    ELASTICSEARCH_TIMEOUT: float = 10.0
+    ELASTICSEARCH_VERIFY_CERTS: bool = True
+
+    # ------------------------------------------------------------------ #
+    # Webhook callback delivery (CAP-025) — optional, gated by            #
+    # CALLBACK_ENABLED so local dev and CI still run without a signing   #
+    # secret configured.                                                 #
+    # ------------------------------------------------------------------ #
+    CALLBACK_ENABLED: bool = False
+    CALLBACK_SIGNING_SECRET: str | None = None
 
     # ------------------------------------------------------------------ #
     # Observability                                                      #

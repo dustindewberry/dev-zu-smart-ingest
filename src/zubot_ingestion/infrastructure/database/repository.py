@@ -309,9 +309,8 @@ class JobRepository:
     ) -> Job | None:
         """Persist a completed extraction result and mark job COMPLETED.
 
-        Note: ``update_job_result`` is not part of the canonical
-        IJobRepository protocol but is the natural extension used by the
-        orchestrator after a successful pipeline run.
+        Implements the canonical ``IJobRepository.update_job_result`` protocol
+        method used by the orchestrator after a successful pipeline run.
         """
         stmt = select(JobORM).where(JobORM.id == job_id)
         res = await self._session.execute(stmt)
@@ -431,7 +430,7 @@ class JobRepository:
 
     # ---- deduplication ---------------------------------------------------
 
-    async def get_job_by_file_hash(self, file_hash: str) -> Job | None:
+    async def get_job_by_file_hash(self, file_hash: FileHash) -> Job | None:
         """Return the most recent COMPLETED job for a file_hash, if any.
 
         Implements the canonical IJobRepository.get_job_by_file_hash method.

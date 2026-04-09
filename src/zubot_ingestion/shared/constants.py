@@ -125,6 +125,16 @@ CONFIDENCE_VALIDATION_PENALTY: float = -0.10
 
 
 # ---------------------------------------------------------------------------
+# Review queue pagination
+# ---------------------------------------------------------------------------
+
+# Default page size for the GET /review/pending endpoint and the underlying
+# IJobRepository.get_pending_reviews() pagination call. Kept in shared/constants
+# so API routes, services, and repository code can all import the same value.
+REVIEW_PENDING_PAGE_SIZE_DEFAULT: int = 50
+
+
+# ---------------------------------------------------------------------------
 # Pipeline limits
 # ---------------------------------------------------------------------------
 
@@ -265,6 +275,8 @@ __all__ = [
     "CONFIDENCE_WEIGHT_TITLE",
     "CONFIDENCE_WEIGHT_DOCUMENT_TYPE",
     "CONFIDENCE_VALIDATION_PENALTY",
+    # Review queue pagination
+    "REVIEW_PENDING_PAGE_SIZE_DEFAULT",
     # Pipeline limits
     "MAX_COMPANION_PAGES",
     "MAX_SIDECAR_METADATA_KEYS",
