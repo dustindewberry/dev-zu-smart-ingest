@@ -27,6 +27,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import get_auth_context
 from zubot_ingestion.api.middleware.rate_limit import limiter
@@ -99,11 +100,15 @@ async def get_batch_endpoint(
     batch_id: str,
     auth_context: AuthContext = Depends(get_auth_context),
     service: IJobService = Depends(get_job_service),
-) -> dict[str, Any]:
+) -> JSONResponse:
     """Handle GET /batches/{batch_id}.
 
     Returns a JSON representation of the :class:`BatchWithJobs` DTO,
     or HTTP 404 if no such batch exists.
+
+    The return type is :class:`fastapi.responses.JSONResponse` (not a
+    plain ``dict``) so slowapi's ``_inject_headers`` hook can attach
+    rate-limit headers — it rejects non-Response return types.
     """
     parsed_id = _parse_batch_id(batch_id)
     try:
@@ -122,7 +127,7 @@ async def get_batch_endpoint(
             detail=f"Batch {batch_id} not found",
         )
 
-    return _serialize_batch(result)
+    return JSONResponse(content=_serialize_batch(result))
 
 
 __all__ = ["get_batch_endpoint", "router"]

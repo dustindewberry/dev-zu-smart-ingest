@@ -32,6 +32,12 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path):
         "CHROMADB_HOST",
         "CHROMADB_PORT",
         "ELASTICSEARCH_URL",
+        "ELASTICSEARCH_USERNAME",
+        "ELASTICSEARCH_PASSWORD",
+        "ELASTICSEARCH_TIMEOUT",
+        "ELASTICSEARCH_VERIFY_CERTS",
+        "CALLBACK_ENABLED",
+        "CALLBACK_SIGNING_SECRET",
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "ZUBOT_INGESTION_API_KEY",
         "WOD_JWT_SECRET",
@@ -62,7 +68,16 @@ def test_defaults_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.OLLAMA_HOST == "http://ollama:11434"
     assert s.CHROMADB_HOST == "chromadb"
     assert s.CHROMADB_PORT == 8000
-    assert s.ELASTICSEARCH_URL == "http://elasticsearch:9200"
+    # ELASTICSEARCH_URL is now an optional setting (None by default) so the
+    # Elasticsearch adapter can degrade to a no-op in dev/CI.
+    assert s.ELASTICSEARCH_URL is None
+    assert s.ELASTICSEARCH_USERNAME is None
+    assert s.ELASTICSEARCH_PASSWORD is None
+    assert s.ELASTICSEARCH_TIMEOUT == 10.0
+    assert s.ELASTICSEARCH_VERIFY_CERTS is True
+    # Callback delivery is disabled by default (CAP-025).
+    assert s.CALLBACK_ENABLED is False
+    assert s.CALLBACK_SIGNING_SECRET is None
     assert s.OTEL_EXPORTER_OTLP_ENDPOINT == "http://phoenix:4317"
     assert s.LOG_LEVEL == "INFO"
     assert s.LOG_DIR == "/var/log/zubot-ingestion"
@@ -70,34 +85,45 @@ def test_defaults_are_applied(monkeypatch: pytest.MonkeyPatch) -> None:
     assert s.RATE_LIMIT_DEFAULT == "100/minute"
 
 
-def test_required_database_url_missing_fails(
+def test_database_url_has_localhost_default(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # DATABASE_URL has a localhost default so dev and CI runs work without
+    # an explicit env var. Production operators are expected to override
+    # via ``.env`` or the docker-compose file. This is an intentional
+    # trade-off documented in config.py — the ``database_url`` property
+    # alias depends on this default being a valid string.
+    monkeypatch.delenv("DATABASE_URL", raising=False)
     monkeypatch.setenv("ZUBOT_INGESTION_API_KEY", "k")
     monkeypatch.setenv("WOD_JWT_SECRET", "s")
-    with pytest.raises(ValidationError) as ei:
-        Settings()  # type: ignore[call-arg]
-    assert "DATABASE_URL" in str(ei.value)
+    s = Settings()  # type: ignore[call-arg]
+    assert "postgresql+asyncpg://" in s.DATABASE_URL
+    assert "localhost" in s.DATABASE_URL
 
 
-def test_required_api_key_missing_fails(
+def test_api_key_defaults_to_empty_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # ZUBOT_INGESTION_API_KEY uses an empty-string default; startup code in
+    # the auth middleware treats "" as "no key configured" and fails auth
+    # for every request. Production deploys override via env.
+    monkeypatch.delenv("ZUBOT_INGESTION_API_KEY", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/d")
     monkeypatch.setenv("WOD_JWT_SECRET", "s")
-    with pytest.raises(ValidationError) as ei:
-        Settings()  # type: ignore[call-arg]
-    assert "ZUBOT_INGESTION_API_KEY" in str(ei.value)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.ZUBOT_INGESTION_API_KEY == ""
 
 
-def test_required_jwt_secret_missing_fails(
+def test_jwt_secret_defaults_to_empty_string(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # WOD_JWT_SECRET uses an empty-string default for the same reason as
+    # ZUBOT_INGESTION_API_KEY. Production deploys override via env.
+    monkeypatch.delenv("WOD_JWT_SECRET", raising=False)
     monkeypatch.setenv("DATABASE_URL", "postgresql+asyncpg://u:p@h/d")
     monkeypatch.setenv("ZUBOT_INGESTION_API_KEY", "k")
-    with pytest.raises(ValidationError) as ei:
-        Settings()  # type: ignore[call-arg]
-    assert "WOD_JWT_SECRET" in str(ei.value)
+    s = Settings()  # type: ignore[call-arg]
+    assert s.WOD_JWT_SECRET == ""
 
 
 def test_environment_overrides(monkeypatch: pytest.MonkeyPatch) -> None:

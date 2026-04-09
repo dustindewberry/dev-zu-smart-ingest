@@ -49,6 +49,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
 from opentelemetry.trace import StatusCode
 
 from zubot_ingestion.domain.entities import (
+    CompanionResult,
     ConfidenceAssessment,
     ExtractionResult,
     Job,
@@ -262,6 +263,39 @@ class StubConfidenceCalculator:
         )
 
 
+class StubCompanionGenerator:
+    """No-op :class:`ICompanionGenerator` double — Stage 2 runs but is marked skipped."""
+
+    async def generate(
+        self,
+        context: PipelineContext,
+        extraction_result: ExtractionResult,
+    ) -> CompanionResult:
+        return CompanionResult(
+            companion_text="",
+            pages_described=0,
+            companion_generated=False,
+            validation_passed=False,
+            quality_score=None,
+        )
+
+
+class StubMetadataWriter:
+    """No-op :class:`IMetadataWriter` double — accepts every write."""
+
+    async def write_metadata(
+        self,
+        document_id: str,
+        sidecar: SidecarDocument,
+        deployment_id: int | None,
+        node_id: int | None,
+    ) -> bool:
+        return True
+
+    async def check_connection(self) -> bool:
+        return True
+
+
 def _make_orchestrator(
     *,
     pdf_processor: StubPDFProcessor | None = None,
@@ -285,6 +319,8 @@ def _make_orchestrator(
         confidence_calculator=confidence_calculator
         or StubConfidenceCalculator(),
         pdf_processor=pdf_processor or StubPDFProcessor(),
+        companion_generator=StubCompanionGenerator(),
+        metadata_writer=StubMetadataWriter(),
     )
 
 
@@ -558,14 +594,20 @@ class TestStage1SpanAttributes:
 
 class TestStage2SpanAttributes:
     @pytest.mark.asyncio
-    async def test_stage2_span_marked_skipped(
+    async def test_stage2_span_carries_companion_attributes(
         self, memory_exporter: InMemorySpanExporter, sample_job: Job
     ) -> None:
+        # Stage 2 (companion generation, CAP-017) now actually runs — the
+        # orchestrator invokes the ICompanionGenerator adapter and records
+        # duration + companion.generated + companion.pages_described
+        # attributes on the span. The old "skipped" attribute was removed
+        # when the real implementation landed.
         orch = _make_orchestrator()
         await orch.run_pipeline(sample_job, b"%PDF-1.4 ...")
         span = _spans_by_name(memory_exporter)[OTEL_SPAN_STAGE2_COMPANION]
-        assert span.attributes["skipped"] is True
-        assert span.attributes["inference.duration_ms"] == 0
+        assert "inference.duration_ms" in span.attributes
+        assert "companion.generated" in span.attributes
+        assert "companion.pages_described" in span.attributes
 
 
 class TestStage3SpanAttributes:

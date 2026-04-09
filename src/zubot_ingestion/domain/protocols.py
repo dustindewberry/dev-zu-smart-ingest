@@ -36,12 +36,14 @@ from zubot_ingestion.domain.entities import (
     SidecarDocument,
     ValidationResult,
 )
-from zubot_ingestion.domain.enums import JobStatus
+from zubot_ingestion.domain.enums import ConfidenceTier, JobStatus
 from zubot_ingestion.shared.types import (
     AuthContext,
     BatchSubmissionResult,
     BatchWithJobs,
+    FileHash,
     JobDetail,
+    JobId,
     PaginatedResult,
     RateLimitResult,
     ReviewCorrections,
@@ -291,6 +293,8 @@ class IOrchestrator(Protocol):
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
+        api_key: str = "",
     ) -> PipelineResult:
         """Execute the complete extraction pipeline.
 
@@ -309,6 +313,11 @@ class IOrchestrator(Protocol):
                 metadata writer for ChromaDB collection routing.
             node_id: Optional Zutec node ID forwarded to the metadata
                 writer alongside ``deployment_id``.
+            callback_url: Optional webhook URL. When non-empty and a
+                callback client is wired, Stage 6 POSTs a completion
+                notification to this URL.
+            api_key: Optional API key forwarded to the callback client's
+                ``notify_completion`` call so receivers can authenticate.
 
         Returns:
             PipelineResult with extraction_result, companion_text, sidecar,
@@ -756,7 +765,7 @@ class IJobRepository(Protocol):
         """
         ...
 
-    async def get_job_by_file_hash(self, file_hash: str) -> Job | None:
+    async def get_job_by_file_hash(self, file_hash: FileHash) -> Job | None:
         """Retrieve job by file hash (for deduplication).
 
         Args:
@@ -781,6 +790,36 @@ class IJobRepository(Protocol):
             status: New status
             result: Extraction result dict (optional)
             error_message: Error message if failed (optional)
+        """
+        ...
+
+    async def update_job_result(
+        self,
+        job_id: JobId,
+        *,
+        result: dict[str, Any],
+        confidence_tier: ConfidenceTier,
+        confidence_score: float,
+        processing_time_ms: int,
+        otel_trace_id: str | None,
+        pipeline_trace: dict[str, Any] | None,
+    ) -> None:
+        """Persist a completed extraction result and mark the job COMPLETED.
+
+        Writes the dedicated indexed columns (``confidence_tier``,
+        ``confidence_score``, ``processing_time_ms``, ``otel_trace_id``,
+        ``pipeline_trace``) in addition to the JSONB ``result`` blob so
+        downstream queries (pending-review pagination, Prometheus tier
+        metrics, OTEL trace correlation) can filter on them.
+
+        Args:
+            job_id: Branded JobId of the job to update
+            result: Extraction result dict (JSONB payload)
+            confidence_tier: Indexed tier classification
+            confidence_score: Indexed aggregate score in [0.0, 1.0]
+            processing_time_ms: Indexed wall-clock duration
+            otel_trace_id: Optional OTEL trace id for correlation
+            pipeline_trace: Optional per-stage pipeline trace dict
         """
         ...
 

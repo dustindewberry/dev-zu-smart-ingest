@@ -26,13 +26,12 @@ module-load time — useful for test runs that only want the domain layer.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:  # pragma: no cover - type-checking only
-    from zubot_ingestion.domain.protocols import (
-        IJobRepository,
-        IOrchestrator,
-    )
+    from zubot_ingestion.domain.protocols import IOrchestrator
+    from zubot_ingestion.infrastructure.database.repository import JobRepository
 
 
 def build_orchestrator() -> "IOrchestrator":
@@ -60,8 +59,15 @@ def build_orchestrator() -> "IOrchestrator":
     from zubot_ingestion.domain.pipeline.extractors.title import TitleExtractor
     from zubot_ingestion.domain.pipeline.json_parser import JsonResponseParser
     from zubot_ingestion.domain.pipeline.sidecar import SidecarBuilder
+    from zubot_ingestion.domain.pipeline.validation import (
+        build_companion_validator,
+    )
+    from zubot_ingestion.infrastructure.callback import build_callback_client
     from zubot_ingestion.infrastructure.chromadb.writer import (
         ChromaDBMetadataWriter,
+    )
+    from zubot_ingestion.infrastructure.elasticsearch import (
+        build_search_indexer,
     )
     from zubot_ingestion.infrastructure.ollama.client import OllamaClient
     from zubot_ingestion.infrastructure.pdf.processor import PyMuPDFProcessor
@@ -70,7 +76,7 @@ def build_orchestrator() -> "IOrchestrator":
     settings = get_settings()
 
     pdf_processor = PyMuPDFProcessor()
-    ollama_client = OllamaClient()
+    ollama_client = OllamaClient(base_url=settings.OLLAMA_HOST)
     response_parser = JsonResponseParser()
     filename_parser = FilenameParser()
 
@@ -84,11 +90,13 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
+        filename_parser=filename_parser,
     )
     document_type_extractor = DocumentTypeExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
+        filename_parser=filename_parser,
     )
 
     sidecar_builder = SidecarBuilder()
@@ -105,6 +113,10 @@ def build_orchestrator() -> "IOrchestrator":
         port=settings.CHROMADB_PORT,
     )
 
+    companion_validator = build_companion_validator()
+    search_indexer = build_search_indexer(settings)
+    callback_client = build_callback_client(settings)
+
     return ExtractionOrchestrator(
         drawing_number_extractor=drawing_number_extractor,
         title_extractor=title_extractor,
@@ -114,22 +126,37 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         companion_generator=companion_generator,
         metadata_writer=metadata_writer,
+        companion_validator=companion_validator,
+        search_indexer=search_indexer,
+        callback_client=callback_client,
     )
 
 
-def get_job_repository() -> "IJobRepository":
-    """Return the configured :class:`IJobRepository` implementation.
+@asynccontextmanager
+async def get_job_repository() -> "AsyncIterator[JobRepository]":
+    """Yield a :class:`JobRepository` bound to a fresh async session.
+
+    This is the canonical composition-root factory for the job repository.
+    The concrete :class:`JobRepository` takes an :class:`AsyncSession` in
+    its constructor, so the factory opens a session via ``get_session()``
+    and yields the repository to the caller. On exit the session is
+    committed (or rolled back on exception) and closed by ``get_session``.
+
+    Callers must use ``async with``::
+
+        async with get_job_repository() as repo:
+            await repo.get_job(job_id)
 
     Lazily imports the concrete repository so the services package can
     still be imported in environments without ``asyncpg`` / SQLAlchemy.
     """
-    from zubot_ingestion.config import get_settings
     from zubot_ingestion.infrastructure.database.repository import (
         JobRepository,
     )
+    from zubot_ingestion.infrastructure.database.session import get_session
 
-    settings = get_settings()
-    return JobRepository(database_url=settings.DATABASE_URL)
+    async with get_session() as session:
+        yield JobRepository(session)
 
 
 __all__ = ["build_orchestrator", "get_job_repository"]

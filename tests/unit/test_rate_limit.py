@@ -97,6 +97,8 @@ def _build_test_app(
                 request.state.auth_context = AuthContext(
                     user_id=inject_auth_user,
                     auth_method="api_key",
+                    deployment_id=None,
+                    node_id=None,
                 )
                 return await call_next(request)
 
@@ -142,12 +144,22 @@ def _build_test_app(
 
 class TestGetRateLimitKey:
     def test_authenticated_user_returns_user_namespaced_key(self) -> None:
-        ctx = AuthContext(user_id="alice", auth_method="api_key")
+        ctx = AuthContext(
+            user_id="alice",
+            auth_method="api_key",
+            deployment_id=None,
+            node_id=None,
+        )
         request = _make_request(auth_context=ctx)
         assert get_rate_limit_key(request) == "user:alice"
 
     def test_authenticated_user_with_jwt_method(self) -> None:
-        ctx = AuthContext(user_id="42", auth_method="wod_token", deployment_id=7)
+        ctx = AuthContext(
+            user_id="42",
+            auth_method="wod_token",
+            deployment_id=7,
+            node_id=None,
+        )
         request = _make_request(auth_context=ctx)
         assert get_rate_limit_key(request) == "user:42"
 
@@ -158,13 +170,32 @@ class TestGetRateLimitKey:
     def test_auth_context_with_empty_user_id_falls_back_to_ip(self) -> None:
         # An AuthContext with a falsy user_id is treated as missing so the
         # IP fallback engages instead of producing the key "user:".
-        ctx = AuthContext(user_id="", auth_method="api_key")
+        ctx = AuthContext(
+            user_id="",
+            auth_method="api_key",
+            deployment_id=None,
+            node_id=None,
+        )
         request = _make_request(auth_context=ctx, client_host="10.0.0.6")
         assert get_rate_limit_key(request) == "ip:10.0.0.6"
 
     def test_two_users_get_distinct_keys(self) -> None:
-        a = _make_request(auth_context=AuthContext(user_id="alice", auth_method="api_key"))
-        b = _make_request(auth_context=AuthContext(user_id="bob", auth_method="api_key"))
+        a = _make_request(
+            auth_context=AuthContext(
+                user_id="alice",
+                auth_method="api_key",
+                deployment_id=None,
+                node_id=None,
+            )
+        )
+        b = _make_request(
+            auth_context=AuthContext(
+                user_id="bob",
+                auth_method="api_key",
+                deployment_id=None,
+                node_id=None,
+            )
+        )
         assert get_rate_limit_key(a) != get_rate_limit_key(b)
 
     def test_two_ips_get_distinct_keys(self) -> None:
@@ -175,7 +206,12 @@ class TestGetRateLimitKey:
     def test_user_and_ip_keys_never_collide(self) -> None:
         # Even if a user is named "1.2.3.4", the namespace prefix prevents
         # them from colliding with an IP-based key.
-        ctx = AuthContext(user_id="1.2.3.4", auth_method="api_key")
+        ctx = AuthContext(
+            user_id="1.2.3.4",
+            auth_method="api_key",
+            deployment_id=None,
+            node_id=None,
+        )
         user_req = _make_request(auth_context=ctx)
         ip_req = _make_request(client_host="1.2.3.4")
         assert get_rate_limit_key(user_req) != get_rate_limit_key(ip_req)

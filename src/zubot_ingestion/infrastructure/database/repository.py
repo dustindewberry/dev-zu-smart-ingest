@@ -309,9 +309,8 @@ class JobRepository:
     ) -> Job | None:
         """Persist a completed extraction result and mark job COMPLETED.
 
-        Note: ``update_job_result`` is not part of the canonical
-        IJobRepository protocol but is the natural extension used by the
-        orchestrator after a successful pipeline run.
+        Implements the canonical ``IJobRepository.update_job_result`` protocol
+        method used by the orchestrator after a successful pipeline run.
         """
         stmt = select(JobORM).where(JobORM.id == job_id)
         res = await self._session.execute(stmt)
@@ -355,27 +354,13 @@ class JobRepository:
         page: int,
         per_page: int,
     ) -> PaginatedResult[Job]:
-        """Canonical-protocol implementation of pending-review pagination."""
+        """Canonical-protocol implementation of pending-review pagination.
 
-        items, total = await self.list_pending_reviews(page=page, per_page=per_page)
-        total_pages = (total + per_page - 1) // per_page if per_page > 0 else 0
-        return PaginatedResult[Job](
-            items=items,
-            total=total,
-            page=page,
-            per_page=per_page,
-            total_pages=total_pages,
-        )
-
-    async def list_pending_reviews(
-        self,
-        page: int = 1,
-        per_page: int = 50,
-    ) -> tuple[list[Job], int]:
-        """Convenience method returning ``(items, total)``.
-
-        Used by older callers and by the canonical ``get_pending_reviews``
-        method, which wraps this in a ``PaginatedResult``.
+        Returns a :class:`PaginatedResult` containing jobs whose
+        ``confidence_tier`` is ``review`` and whose ``status`` is not
+        ``rejected`` (a rejected job is no longer pending). Results are
+        sorted by ``created_at`` descending so the oldest pending items
+        appear on the last page.
         """
 
         page = max(1, page)
@@ -401,7 +386,14 @@ class JobRepository:
         count_res = await self._session.execute(count_stmt)
         items = [_to_job(r) for r in items_res.scalars().all()]
         total = int(count_res.scalar() or 0)
-        return items, total
+        total_pages = (total + per_page - 1) // per_page if per_page > 0 else 0
+        return PaginatedResult[Job](
+            items=items,
+            total=total,
+            page=page,
+            per_page=per_page,
+            total_pages=total_pages,
+        )
 
     async def create_review_action(
         self,
@@ -431,7 +423,7 @@ class JobRepository:
 
     # ---- deduplication ---------------------------------------------------
 
-    async def get_job_by_file_hash(self, file_hash: str) -> Job | None:
+    async def get_job_by_file_hash(self, file_hash: FileHash) -> Job | None:
         """Return the most recent COMPLETED job for a file_hash, if any.
 
         Implements the canonical IJobRepository.get_job_by_file_hash method.

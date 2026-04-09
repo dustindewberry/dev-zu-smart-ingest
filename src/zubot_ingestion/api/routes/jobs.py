@@ -27,6 +27,7 @@ from typing import Any
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import JSONResponse
 
 from zubot_ingestion.api.middleware.auth import get_auth_context
 from zubot_ingestion.api.middleware.rate_limit import limiter
@@ -88,11 +89,15 @@ async def get_job_endpoint(
     job_id: str,
     auth_context: AuthContext = Depends(get_auth_context),
     service: IJobService = Depends(get_job_service),
-) -> dict[str, Any]:
+) -> JSONResponse:
     """Handle GET /jobs/{job_id}.
 
     Returns a JSON representation of the :class:`JobDetail` DTO, or
     HTTP 404 if no such job exists.
+
+    The return type is :class:`fastapi.responses.JSONResponse` (not a
+    plain ``dict``) so slowapi's ``_inject_headers`` hook can attach
+    rate-limit headers — it rejects non-Response return types.
     """
     parsed_id = _parse_job_id(job_id)
     try:
@@ -111,7 +116,7 @@ async def get_job_endpoint(
             detail=f"Job {job_id} not found",
         )
 
-    return _serialize_job(result)
+    return JSONResponse(content=_serialize_job(result))
 
 
 __all__ = ["get_job_endpoint", "router"]

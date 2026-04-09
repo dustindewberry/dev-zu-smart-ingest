@@ -110,6 +110,19 @@ def setup_otel(
         exporter = OTLPSpanExporter(endpoint=otlp_endpoint, insecure=True)
         provider.add_span_processor(BatchSpanProcessor(exporter))
 
+    # OTEL's trace.set_tracer_provider uses a SET_ONCE latch — a second
+    # call is silently ignored. To make setup_otel truly idempotent (so
+    # FastAPI lifespan handlers and tests can invoke it multiple times),
+    # we reset the latch and the global provider reference BEFORE
+    # installing the new one. This is a documented OTEL quirk.
+    try:
+        from opentelemetry.util._once import Once  # type: ignore[import-untyped]
+
+        trace._TRACER_PROVIDER_SET_ONCE = Once()  # type: ignore[attr-defined]
+        trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - defensive: tolerate SDK layout changes
+        pass
+
     trace.set_tracer_provider(provider)
 
     _enable_auto_instrumentations()

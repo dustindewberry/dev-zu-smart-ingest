@@ -420,7 +420,13 @@ async def test_happy_path_returns_pipeline_result_with_all_fields() -> None:
     assert result.sidecar.metadata_attributes["source_filename"] == "test.pdf"
     assert result.confidence_assessment.tier == ConfidenceTier.AUTO
     assert result.confidence_assessment.overall_confidence == pytest.approx(0.85)
-    assert result.otel_trace_id is None
+    # CAP-027 OTEL instrumentation: the orchestrator now captures the
+    # job span's trace id into PipelineResult.otel_trace_id as a 32-char
+    # lowercase hex string. When no OTLP exporter is configured the
+    # in-process provider still emits a valid (or all-zero) trace id.
+    assert result.otel_trace_id is not None
+    assert isinstance(result.otel_trace_id, str)
+    assert len(result.otel_trace_id) == 32
     assert result.errors == []
 
     # Each Stage 1 extractor was invoked exactly once.
