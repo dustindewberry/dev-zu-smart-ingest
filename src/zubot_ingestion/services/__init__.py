@@ -76,7 +76,7 @@ def build_orchestrator() -> "IOrchestrator":
     settings = get_settings()
 
     pdf_processor = PyMuPDFProcessor()
-    ollama_client = OllamaClient()
+    ollama_client = OllamaClient(base_url=settings.OLLAMA_HOST)
     response_parser = JsonResponseParser()
     filename_parser = FilenameParser()
 
@@ -90,11 +90,13 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
+        filename_parser=filename_parser,
     )
     document_type_extractor = DocumentTypeExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
+        filename_parser=filename_parser,
     )
 
     sidecar_builder = SidecarBuilder()

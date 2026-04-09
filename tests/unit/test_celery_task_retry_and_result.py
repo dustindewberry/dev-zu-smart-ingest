@@ -247,7 +247,7 @@ def _patch_get_job_repository(repo: RecordingRepository) -> Any:
         yield repo
 
     return patch(
-        "zubot_ingestion.services.get_job_repository",
+        "zubot_ingestion.services.celery_app.get_job_repository",
         side_effect=lambda: _fake_factory(),
     )
 
@@ -348,7 +348,7 @@ def test_retry_non_terminal_does_not_mark_failed(tmp_path: Path) -> None:
     try:
         with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
                 _patch_get_job_repository(repo), patch(
-            "zubot_ingestion.services.build_orchestrator",
+            "zubot_ingestion.services.celery_app.build_orchestrator",
             return_value=orchestrator,
         ), patch.object(celery_module, "_mark_job_failed", _spy_mark_failed):
             with pytest.raises(RuntimeError, match="transient flake"):
@@ -398,7 +398,7 @@ def test_retry_terminal_calls_mark_failed_exactly_once(tmp_path: Path) -> None:
     try:
         with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
                 _patch_get_job_repository(repo), patch(
-            "zubot_ingestion.services.build_orchestrator",
+            "zubot_ingestion.services.celery_app.build_orchestrator",
             return_value=orchestrator,
         ), patch.object(celery_module, "_mark_job_failed", _spy_mark_failed):
             with pytest.raises(RuntimeError, match="permanent failure"):
@@ -442,7 +442,7 @@ async def test_success_path_calls_update_job_result_with_indexed_fields(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
 
@@ -507,7 +507,7 @@ def test_no_oscillation_between_failed_and_processing_across_retries(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ), patch.object(celery_module, "_mark_job_failed", _spy_mark_failed):
         # Simulate every attempt from 0 through max_retries inclusive.
         for attempt in range(max_retries + 1):

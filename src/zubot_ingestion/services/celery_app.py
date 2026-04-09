@@ -64,6 +64,7 @@ from zubot_ingestion.infrastructure.logging.config import (
     get_logger,
     setup_logging,
 )
+from zubot_ingestion.services import build_orchestrator, get_job_repository
 from zubot_ingestion.shared.constants import (
     CELERY_BROKER_DB,
     CELERY_QUEUE_DEFAULT,
@@ -262,8 +263,6 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
     ``processing_time_ms``, ``otel_trace_id``, ``pipeline_trace``) are
     actually populated.
     """
-    from zubot_ingestion.services import build_orchestrator, get_job_repository
-
     async with get_job_repository() as repo:
         job = await repo.get_job(job_id)
         if job is None:
@@ -378,8 +377,6 @@ async def _mark_job_failed(job_id: UUID, exc: BaseException) -> None:
     self-contained and can be driven from a sync ``except`` block via
     ``asyncio.run(_mark_job_failed(job_id, exc))``.
     """
-    from zubot_ingestion.services import get_job_repository
-
     async with get_job_repository() as repo:
         await repo.update_job_status(
             job_id,

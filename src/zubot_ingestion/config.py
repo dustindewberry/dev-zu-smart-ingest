@@ -56,22 +56,14 @@ class Settings(BaseSettings):
 
     # ------------------------------------------------------------------ #
     # Webhook callback delivery (CAP-025) — optional, gated by            #
-    # CALLBACK_ENABLED so local dev and CI still run without a signing   #
-    # secret configured.                                                 #
+    # CALLBACK_ENABLED. When False the composition root wires a          #
+    # NoOpCallbackClient so local dev / CI run without a live receiver.  #
+    # When True, the real CallbackHttpClient is constructed and the     #
+    # signing secret (if non-empty) is used to produce an                #
+    # X-Zubot-Signature HMAC-SHA256 header on every delivery.            #
     # ------------------------------------------------------------------ #
     CALLBACK_ENABLED: bool = False
     CALLBACK_SIGNING_SECRET: str | None = None
-
-    # ------------------------------------------------------------------ #
-    # Webhook callbacks (CAP-025)                                        #
-    # ------------------------------------------------------------------ #
-    # When CALLBACK_ENABLED is False the callback client is wired to a
-    # no-op implementation so local/dev runs do not attempt to deliver
-    # notifications. When True, the composition root wires the real
-    # CallbackHttpClient with HMAC-SHA256 signing using
-    # CALLBACK_SIGNING_SECRET.
-    CALLBACK_ENABLED: bool = False
-    CALLBACK_SIGNING_SECRET: str = ""
 
     # ------------------------------------------------------------------ #
     # Observability                                                      #
@@ -102,17 +94,6 @@ class Settings(BaseSettings):
     # own ``@limiter.limit(...)`` decorator. Per-endpoint limits override
     # this value (e.g. POST /extract uses 20/minute).
     RATE_LIMIT_DEFAULT: str = "100/minute"
-
-    # ------------------------------------------------------------------ #
-    # Callback webhook (CAP-025)                                         #
-    # ------------------------------------------------------------------ #
-    # When ``CALLBACK_ENABLED`` is False the composition root wires a
-    # ``NoOpCallbackClient`` so local dev / CI do not require a live
-    # webhook receiver. The signing secret is used to produce an
-    # ``X-Zubot-Signature`` HMAC-SHA256 header on every delivery; if it
-    # is an empty string the header is omitted.
-    CALLBACK_ENABLED: bool = False
-    CALLBACK_SIGNING_SECRET: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",

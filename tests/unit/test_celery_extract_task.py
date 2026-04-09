@@ -130,7 +130,7 @@ def _patch_get_job_repository(repo: FakeRepository) -> Any:
         yield repo
 
     return patch(
-        "zubot_ingestion.services.get_job_repository",
+        "zubot_ingestion.services.celery_app.get_job_repository",
         side_effect=lambda: _fake_factory(),
     )
 
@@ -257,7 +257,7 @@ async def test_run_extract_document_task_persists_completed_for_auto_tier(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
 
@@ -324,7 +324,7 @@ async def test_run_extract_document_task_persists_review_tier_as_review_status(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
 
@@ -355,7 +355,7 @@ async def test_run_extract_document_task_persists_spot_tier_as_completed(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ):
         result = await _run_extract_document_task(job.job_id)
 
@@ -382,7 +382,7 @@ async def test_run_extract_document_task_raises_lookup_error_when_job_missing(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ):
         with pytest.raises(LookupError, match="not found"):
             await _run_extract_document_task(bogus_id)
@@ -425,7 +425,7 @@ async def test_run_extract_document_task_missing_pdf_file_raises(
 
     with patch.object(celery_module, "TEMP_PDF_ROOT", tmp_path), \
             _patch_get_job_repository(repo), patch(
-        "zubot_ingestion.services.build_orchestrator", return_value=orchestrator
+        "zubot_ingestion.services.celery_app.build_orchestrator", return_value=orchestrator
     ):
         with pytest.raises(FileNotFoundError):
             await _run_extract_document_task(job.job_id)
