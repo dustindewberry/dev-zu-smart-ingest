@@ -292,6 +292,17 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
                 },
             )
 
+        # Source the webhook authentication credential from settings so
+        # receivers can authenticate the webhook sender via X-API-Key.
+        # We use the single-tenant service API key (ZUBOT_INGESTION_API_KEY)
+        # because Batch has no per-submission api_key column and the
+        # AuthContext discriminator does not carry the literal key string.
+        # An empty string falls through to CallbackHttpClient which omits
+        # the header entirely, preserving current behaviour in local/CI
+        # environments where the key is unset.
+        task_settings = get_settings()
+        callback_api_key: str = task_settings.ZUBOT_INGESTION_API_KEY or ""
+
         pdf_path = TEMP_PDF_ROOT / str(job.batch_id) / f"{job.job_id}.pdf"
         pdf_bytes = pdf_path.read_bytes()
 
@@ -315,6 +326,7 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
             deployment_id=deployment_id,
             node_id=node_id,
             callback_url=callback_url,
+            api_key=callback_api_key,
         )
         processing_time_ms = int((time.perf_counter() - pipeline_start) * 1000)
 

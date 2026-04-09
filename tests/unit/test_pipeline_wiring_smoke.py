@@ -307,6 +307,8 @@ async def test_pipeline_wiring_smoke_invokes_all_cross_cutting_adapters() -> Non
         b"%PDF-1.4 fake",
         deployment_id=42,
         node_id=7,
+        callback_url="https://example.test/webhook",
+        api_key="test-api-key",
     )
 
     # (1) Validator was invoked.
