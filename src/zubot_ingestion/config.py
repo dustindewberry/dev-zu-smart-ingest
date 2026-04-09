@@ -92,6 +92,17 @@ class Settings(BaseSettings):
     # this value (e.g. POST /extract uses 20/minute).
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
+    # ------------------------------------------------------------------ #
+    # Callback webhook (CAP-025)                                         #
+    # ------------------------------------------------------------------ #
+    # When ``CALLBACK_ENABLED`` is False the composition root wires a
+    # ``NoOpCallbackClient`` so local dev / CI do not require a live
+    # webhook receiver. The signing secret is used to produce an
+    # ``X-Zubot-Signature`` HMAC-SHA256 header on every delivery; if it
+    # is an empty string the header is omitted.
+    CALLBACK_ENABLED: bool = False
+    CALLBACK_SIGNING_SECRET: str = ""
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
