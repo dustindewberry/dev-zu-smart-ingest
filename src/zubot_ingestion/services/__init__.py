@@ -26,13 +26,12 @@ module-load time — useful for test runs that only want the domain layer.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from contextlib import asynccontextmanager
+from typing import TYPE_CHECKING, AsyncIterator
 
 if TYPE_CHECKING:  # pragma: no cover - type-checking only
-    from zubot_ingestion.domain.protocols import (
-        IJobRepository,
-        IOrchestrator,
-    )
+    from zubot_ingestion.domain.protocols import IOrchestrator
+    from zubot_ingestion.infrastructure.database.repository import JobRepository
 
 
 def build_orchestrator() -> "IOrchestrator":
@@ -117,19 +116,31 @@ def build_orchestrator() -> "IOrchestrator":
     )
 
 
-def get_job_repository() -> "IJobRepository":
-    """Return the configured :class:`IJobRepository` implementation.
+@asynccontextmanager
+async def get_job_repository() -> "AsyncIterator[JobRepository]":
+    """Yield a :class:`JobRepository` bound to a fresh async session.
+
+    This is the canonical composition-root factory for the job repository.
+    The concrete :class:`JobRepository` takes an :class:`AsyncSession` in
+    its constructor, so the factory opens a session via ``get_session()``
+    and yields the repository to the caller. On exit the session is
+    committed (or rolled back on exception) and closed by ``get_session``.
+
+    Callers must use ``async with``::
+
+        async with get_job_repository() as repo:
+            await repo.get_job(job_id)
 
     Lazily imports the concrete repository so the services package can
     still be imported in environments without ``asyncpg`` / SQLAlchemy.
     """
-    from zubot_ingestion.config import get_settings
     from zubot_ingestion.infrastructure.database.repository import (
         JobRepository,
     )
+    from zubot_ingestion.infrastructure.database.session import get_session
 
-    settings = get_settings()
-    return JobRepository(database_url=settings.DATABASE_URL)
+    async with get_session() as session:
+        yield JobRepository(session)
 
 
 __all__ = ["build_orchestrator", "get_job_repository"]
