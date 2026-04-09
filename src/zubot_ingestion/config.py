@@ -46,6 +46,17 @@ class Settings(BaseSettings):
     ELASTICSEARCH_URL: str = "http://elasticsearch:9200"
 
     # ------------------------------------------------------------------ #
+    # Webhook callbacks (CAP-025)                                        #
+    # ------------------------------------------------------------------ #
+    # When CALLBACK_ENABLED is False the callback client is wired to a
+    # no-op implementation so local/dev runs do not attempt to deliver
+    # notifications. When True, the composition root wires the real
+    # CallbackHttpClient with HMAC-SHA256 signing using
+    # CALLBACK_SIGNING_SECRET.
+    CALLBACK_ENABLED: bool = False
+    CALLBACK_SIGNING_SECRET: str = ""
+
+    # ------------------------------------------------------------------ #
     # Observability                                                      #
     # ------------------------------------------------------------------ #
     OTEL_EXPORTER_OTLP_ENDPOINT: str = "http://phoenix:4317"

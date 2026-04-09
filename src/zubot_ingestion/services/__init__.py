@@ -60,8 +60,15 @@ def build_orchestrator() -> "IOrchestrator":
     from zubot_ingestion.domain.pipeline.extractors.title import TitleExtractor
     from zubot_ingestion.domain.pipeline.json_parser import JsonResponseParser
     from zubot_ingestion.domain.pipeline.sidecar import SidecarBuilder
+    from zubot_ingestion.domain.pipeline.validation import (
+        build_companion_validator,
+    )
+    from zubot_ingestion.infrastructure.callback import build_callback_client
     from zubot_ingestion.infrastructure.chromadb.writer import (
         ChromaDBMetadataWriter,
+    )
+    from zubot_ingestion.infrastructure.elasticsearch import (
+        build_search_indexer,
     )
     from zubot_ingestion.infrastructure.ollama.client import OllamaClient
     from zubot_ingestion.infrastructure.pdf.processor import PyMuPDFProcessor
@@ -105,6 +112,10 @@ def build_orchestrator() -> "IOrchestrator":
         port=settings.CHROMADB_PORT,
     )
 
+    companion_validator = build_companion_validator()
+    search_indexer = build_search_indexer(settings)
+    callback_client = build_callback_client(settings)
+
     return ExtractionOrchestrator(
         drawing_number_extractor=drawing_number_extractor,
         title_extractor=title_extractor,
@@ -114,6 +125,9 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         companion_generator=companion_generator,
         metadata_writer=metadata_writer,
+        companion_validator=companion_validator,
+        search_indexer=search_indexer,
+        callback_client=callback_client,
     )
 
 
