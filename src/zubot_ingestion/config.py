@@ -95,6 +95,28 @@ class Settings(BaseSettings):
     # this value (e.g. POST /extract uses 20/minute).
     RATE_LIMIT_DEFAULT: str = "100/minute"
 
+    # ------------------------------------------------------------------ #
+    # Ollama HTTP connection pool + retry budget (perf tuning)           #
+    # ------------------------------------------------------------------ #
+    # Bounded httpx.AsyncClient pool limits shared across every Ollama
+    # request the OllamaClient instance issues. Defaults match the
+    # pre-refactor effective behaviour (one-shot client per call) while
+    # allowing operators to scale up via environment variables when new
+    # hardware is added.
+    OLLAMA_HTTP_POOL_MAX_CONNECTIONS: int = 10
+    OLLAMA_HTTP_POOL_MAX_KEEPALIVE: int = 5
+    OLLAMA_HTTP_TIMEOUT_SECONDS: float = 120.0
+
+    # Retry budget for transient Ollama failures (503, 429, transport
+    # errors). ``OLLAMA_RETRY_MAX_ATTEMPTS`` is the TOTAL attempt count
+    # (1 initial + N-1 retries). Backoff is exponential:
+    # delay(i) = INITIAL_BACKOFF * (MULTIPLIER ** i)
+    # Default (3 attempts, 1s initial, x2 multiplier) preserves the
+    # pre-refactor 1s / 2s / 4s schedule.
+    OLLAMA_RETRY_MAX_ATTEMPTS: int = 3
+    OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS: float = 1.0
+    OLLAMA_RETRY_BACKOFF_MULTIPLIER: float = 2.0
+
     model_config = SettingsConfigDict(
         env_file=".env",
         case_sensitive=True,
