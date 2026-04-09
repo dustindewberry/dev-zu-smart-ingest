@@ -351,6 +351,8 @@ class ExtractionOrchestrator(IOrchestrator):
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
+        api_key: str = "",
     ) -> PipelineResult:
         """Execute the full extraction pipeline for a single job.
 
@@ -949,13 +951,13 @@ class ExtractionOrchestrator(IOrchestrator):
                 # Degrade gracefully: record failures in pipeline_trace and
                 # never re-raise. Skipped when no callback client is wired.
                 # ----------------------------------------------------------
-                if self._callback_client is not None:
+                if self._callback_client is not None and callback_url:
                     callback_start = time.perf_counter()
                     try:
                         notified = await self._callback_client.notify_completion(
-                            callback_url="",
+                            callback_url=callback_url,
                             job=job,
-                            api_key="",
+                            api_key=api_key,
                         )
                         pipeline_trace["stages"]["callback"] = {
                             "duration_ms": _elapsed_ms(callback_start),
@@ -994,7 +996,11 @@ class ExtractionOrchestrator(IOrchestrator):
                         "duration_ms": 0,
                         "ok": True,
                         "skipped": True,
-                        "reason": "no_callback_client",
+                        "reason": (
+                            "no_callback_client"
+                            if self._callback_client is None
+                            else "no_callback_url"
+                        ),
                     }
 
         # CAP-028: observe the total wall-clock and increment the

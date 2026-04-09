@@ -269,16 +269,20 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
             raise LookupError(f"job {job_id} not found in repository")
 
         # Fetch the parent batch so we can forward deployment_id / node_id to
-        # the orchestrator's metadata writer (CAP-023). Failure to load the
+        # the orchestrator's metadata writer (CAP-023) and the callback URL
+        # to the webhook delivery stage (CAP-025). Failure to load the
         # batch is tolerated — the orchestrator will fall back to the
-        # 'default' ChromaDB collection if both IDs are None.
+        # 'default' ChromaDB collection if both IDs are None, and will
+        # skip the callback stage if callback_url is None.
         deployment_id: int | None = None
         node_id: int | None = None
+        callback_url: str | None = None
         try:
             batch = await repo.get_batch(job.batch_id)
             if batch is not None:
                 deployment_id = batch.deployment_id
                 node_id = batch.node_id
+                callback_url = batch.callback_url
         except Exception:  # noqa: BLE001 - tolerate missing batch
             _LOG.warning(
                 "extract_document_task_batch_lookup_failed",
@@ -310,6 +314,7 @@ async def _run_extract_document_task(job_id: UUID) -> dict[str, Any]:
             pdf_bytes,
             deployment_id=deployment_id,
             node_id=node_id,
+            callback_url=callback_url,
         )
         processing_time_ms = int((time.perf_counter() - pipeline_start) * 1000)
 

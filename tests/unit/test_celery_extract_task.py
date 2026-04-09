@@ -153,6 +153,8 @@ class FakeOrchestrator:
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
+        api_key: str = "",
     ) -> PipelineResult:
         self.calls += 1
         self.last_job = job

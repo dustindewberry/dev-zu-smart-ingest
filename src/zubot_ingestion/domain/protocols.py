@@ -293,6 +293,8 @@ class IOrchestrator(Protocol):
         *,
         deployment_id: int | None = None,
         node_id: int | None = None,
+        callback_url: str | None = None,
+        api_key: str = "",
     ) -> PipelineResult:
         """Execute the complete extraction pipeline.
 
@@ -311,6 +313,11 @@ class IOrchestrator(Protocol):
                 metadata writer for ChromaDB collection routing.
             node_id: Optional Zutec node ID forwarded to the metadata
                 writer alongside ``deployment_id``.
+            callback_url: Optional webhook URL. When non-empty and a
+                callback client is wired, Stage 6 POSTs a completion
+                notification to this URL.
+            api_key: Optional API key forwarded to the callback client's
+                ``notify_completion`` call so receivers can authenticate.
 
         Returns:
             PipelineResult with extraction_result, companion_text, sidecar,
