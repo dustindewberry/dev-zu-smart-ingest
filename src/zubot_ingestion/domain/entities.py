@@ -190,11 +190,31 @@ class CompanionResult:
 
 @dataclass(frozen=True)
 class ValidationResult:
-    """Result of cross-checking a companion against extraction metadata."""
+    """Result of cross-checking a companion against extraction metadata.
+
+    The ``validation_passed``/``quality_score``/``issues`` fields are the
+    canonical rule-based-validator shape produced by
+    :class:`zubot_ingestion.domain.pipeline.validation.CompanionValidator`.
+    The legacy ``passed``/``warnings``/``confidence_adjustment`` fields are
+    retained as aliases so existing consumers (notably
+    :class:`zubot_ingestion.domain.pipeline.confidence.ConfidenceCalculator`)
+    continue to work unchanged.
+    """
 
     passed: bool
     warnings: list[str] = field(default_factory=list)
     confidence_adjustment: float = 0.0
+    validation_passed: bool | None = None
+    quality_score: float = 1.0
+    issues: list[str] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Keep the legacy and canonical boolean fields in sync. When a caller
+        # builds the result using the legacy ``passed`` kwarg only, mirror it
+        # into ``validation_passed``; when only ``validation_passed`` is set
+        # (via the new CompanionValidator), mirror it back into ``passed``.
+        if self.validation_passed is None:
+            object.__setattr__(self, "validation_passed", self.passed)
 
 
 # ---------------------------------------------------------------------------
