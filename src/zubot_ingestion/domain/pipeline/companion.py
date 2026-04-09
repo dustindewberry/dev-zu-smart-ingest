@@ -371,7 +371,11 @@ class CompanionGenerator(ICompanionGenerator):
             companion_text=companion_text,
             pages_described=successful_pages,
             companion_generated=True,
-            validation_passed=False,  # set by ICompanionValidator in step-19
+            # Validation is run by ICompanionValidator in the orchestrator
+            # AFTER this call returns. The companion generator never sets
+            # this field to True; the orchestrator wires a separate
+            # ValidationResult into the ConfidenceCalculator.
+            validation_passed=False,
             quality_score=None,
         )
 
