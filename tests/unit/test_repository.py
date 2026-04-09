@@ -335,7 +335,7 @@ async def test_find_by_file_hash_alias_works(session):
 
 
 @pytest.mark.asyncio
-async def test_list_pending_reviews_returns_only_review_tier(session):
+async def test_get_pending_reviews_returns_only_review_tier(session):
     repo = JobRepository(session)
     batch = _make_batch(total_jobs=3)
     j_review = _make_job(batch.batch_id, file_hash="r" * 64, filename="review.pdf")
@@ -358,11 +358,11 @@ async def test_list_pending_reviews_returns_only_review_tier(session):
         processing_time_ms=1,
     )
 
-    items, total = await repo.list_pending_reviews(page=1, per_page=10)
-    assert total == 1
-    assert len(items) == 1
-    assert items[0].job_id == j_review.job_id
-    assert items[0].confidence_tier == ConfidenceTier.REVIEW
+    paginated = await repo.get_pending_reviews(page=1, per_page=10)
+    assert paginated.total == 1
+    assert len(paginated.items) == 1
+    assert paginated.items[0].job_id == j_review.job_id
+    assert paginated.items[0].confidence_tier == ConfidenceTier.REVIEW
 
 
 @pytest.mark.asyncio
@@ -392,7 +392,7 @@ async def test_get_pending_reviews_returns_paginated_result(session):
 
 
 @pytest.mark.asyncio
-async def test_list_pending_reviews_excludes_rejected(session):
+async def test_get_pending_reviews_excludes_rejected(session):
     repo = JobRepository(session)
     batch = _make_batch()
     job = _make_job(batch.batch_id)
@@ -406,9 +406,9 @@ async def test_list_pending_reviews_excludes_rejected(session):
     )
     await repo.update_job_status(job.job_id, JobStatus.REJECTED)
 
-    items, total = await repo.list_pending_reviews()
-    assert total == 0
-    assert items == []
+    paginated = await repo.get_pending_reviews(page=1, per_page=50)
+    assert paginated.total == 0
+    assert paginated.items == []
 
 
 @pytest.mark.asyncio
