@@ -600,6 +600,24 @@ class IPDFProcessor(Protocol):
         """
         ...
 
+    def extract_page_text(self, pdf_bytes: bytes, page_number: int) -> str:
+        """Extract the text layer for a single page.
+
+        Args:
+            pdf_bytes: Raw PDF file bytes
+            page_number: Zero-based page index (negative indexes allowed)
+
+        Returns:
+            The text content of the requested page only, with no separator
+            tokens. Returns an empty string if the page has no text layer
+            or if extraction fails.
+
+        Raises:
+            PDFLoadError: If PDF is corrupted
+            PageNotFoundError: If page_number is out of range
+        """
+        ...
+
     def render_page(
         self,
         pdf_bytes: bytes,

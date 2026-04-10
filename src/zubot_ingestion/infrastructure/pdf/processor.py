@@ -241,6 +241,24 @@ class PyMuPDFProcessor:
                 parts.append(text or "")
         return "".join(parts)
 
+    # -- extract_page_text ------------------------------------------------
+
+    def extract_page_text(self, pdf_bytes: bytes, page_number: int) -> str:
+        """Extract the text layer for a single page.
+
+        ``page_number`` may be negative (e.g. ``-1`` for the last page).
+        Returns an empty string if the page has no text layer or if text
+        extraction fails. Unlike :meth:`extract_text`, this method returns
+        ONLY the content of the requested page with no separator tokens.
+        """
+        with _open_document(pdf_bytes) as doc:
+            idx = _resolve_page_index(page_number, doc.page_count)
+            try:
+                page = doc.load_page(idx)
+                return page.get_text("text") or ""
+            except Exception:
+                return ""
+
     # -- render_page ------------------------------------------------------
 
     def render_page(

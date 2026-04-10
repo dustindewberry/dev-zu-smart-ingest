@@ -120,14 +120,16 @@ async def test_generate_vision_success_decodes_response() -> None:
     # The wire-level request matches Ollama's contract.
     assert captured["method"] == "POST"
     assert captured["url"] == f"{BASE_URL}/api/generate"
-    assert captured["body"] == {
-        "model": OLLAMA_MODEL_VISION,
-        "prompt": "find drawing number",
-        "images": ["BASE64IMG"],
-        "format": "json",
-        "stream": False,
-        "options": {"temperature": OLLAMA_TEMPERATURE_DETERMINISTIC},
-    }
+    body = captured["body"]
+    assert body["model"] == OLLAMA_MODEL_VISION
+    assert body["prompt"] == "find drawing number"
+    assert body["images"] == ["BASE64IMG"]
+    assert body["format"] == "json"
+    assert body["stream"] is False
+    assert body["options"] == {"temperature": OLLAMA_TEMPERATURE_DETERMINISTIC}
+    # keep_alive is forwarded from Settings (PERF_OLLAMA_KEEP_ALIVE="5m")
+    # so the Ollama server holds the model resident between calls.
+    assert body["keep_alive"] == "5m"
 
     # The decoded entity matches the documented field mapping.
     assert isinstance(result, OllamaResponse)
@@ -199,6 +201,9 @@ async def test_generate_text_builds_full_prompt_and_omits_images() -> None:
     assert body["format"] == "json"
     assert body["stream"] is False
     assert "images" not in body
+    # keep_alive is forwarded from Settings so the Ollama server
+    # holds the text model resident between calls.
+    assert body["keep_alive"] == "5m"
 
     assert result.response_text == '{"title": "X"}'
     assert result.model == OLLAMA_MODEL_TEXT

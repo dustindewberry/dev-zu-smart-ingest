@@ -87,23 +87,36 @@ def build_orchestrator() -> "IOrchestrator":
     response_parser = JsonResponseParser()
     filename_parser = FilenameParser()
 
+    # Source the Ollama model names from Settings so operators can swap
+    # the vision + text models at deploy time via OLLAMA_VISION_MODEL /
+    # OLLAMA_TEXT_MODEL environment variables. The extractors store the
+    # kwargs on self and forward them on every generate_vision /
+    # generate_text call.
+    vision_model = settings.OLLAMA_VISION_MODEL
+    text_model = settings.OLLAMA_TEXT_MODEL
+
     drawing_number_extractor = DrawingNumberExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
         filename_parser=filename_parser,
+        vision_model=vision_model,
+        text_model=text_model,
     )
     title_extractor = TitleExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
         filename_parser=filename_parser,
+        vision_model=vision_model,
+        text_model=text_model,
     )
     document_type_extractor = DocumentTypeExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
         filename_parser=filename_parser,
+        text_model=text_model,
     )
 
     sidecar_builder = SidecarBuilder()
@@ -113,6 +126,7 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
+        settings=settings,
     )
 
     metadata_writer = ChromaDBMetadataWriter(

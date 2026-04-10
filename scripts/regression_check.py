@@ -649,6 +649,18 @@ async def run_with_model(
     previous: str | None = target_env.get(OLLAMA_TEXT_MODEL_ENV)
     target_env[OLLAMA_TEXT_MODEL_ENV] = model
 
+    # Clear the @lru_cache on get_settings() so the next call
+    # re-reads the (just-mutated) OLLAMA_TEXT_MODEL env var. Without
+    # this the cached singleton returns the stale model name and
+    # every candidate in the fallback ladder silently uses the
+    # baseline model — producing false-positive similarity scores.
+    try:
+        from zubot_ingestion.config import get_settings as _get_settings
+
+        _get_settings.cache_clear()
+    except Exception:  # pragma: no cover - defensive: test doubles
+        pass
+
     if orchestrator_factory is None:
 
         def _default_factory() -> Any:
@@ -670,6 +682,15 @@ async def run_with_model(
             target_env.pop(OLLAMA_TEXT_MODEL_ENV, None)
         else:
             target_env[OLLAMA_TEXT_MODEL_ENV] = previous
+        # Clear the cache again on exit so downstream callers don't
+        # inherit a Settings singleton built against the candidate
+        # env var.
+        try:
+            from zubot_ingestion.config import get_settings as _get_settings
+
+            _get_settings.cache_clear()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
 
 # ---------------------------------------------------------------------------

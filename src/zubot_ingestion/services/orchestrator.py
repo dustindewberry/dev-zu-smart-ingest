@@ -106,7 +106,6 @@ from zubot_ingestion.infrastructure.metrics.prometheus import (
 from zubot_ingestion.infrastructure.otel.instrumentation import get_tracer
 from zubot_ingestion.shared.constants import (
     OTEL_SPAN_BATCH,
-    OTEL_SPAN_COMPANION_SKIPPED,
     OTEL_SPAN_CONFIDENCE,
     OTEL_SPAN_JOB,
     OTEL_SPAN_STAGE1_DOC_TYPE,
@@ -579,128 +578,45 @@ class ExtractionOrchestrator(IOrchestrator):
                 # ----------------------------------------------------------
                 # Stage 2 — companion document generation (CAP-017)
                 #
-                # The flag-gated "companion-skip" heuristic (task-1's
-                # perf-tuning surface, task-6 wiring) lets operators
+                # The flag-gated "companion-skip" heuristic lets operators
                 # opt out of the expensive vision call on pages whose
                 # extracted PDF text layer already exceeds a word-count
-                # threshold. The assumption is that a text-dense page
-                # (spec sheet, title block, legend) does not need a
-                # vision-model-generated companion description on top.
+                # threshold (``COMPANION_SKIP_MIN_WORDS``). The decision
+                # is made PER PAGE inside :class:`CompanionGenerator`,
+                # not once per document, so a drawing set with a sparse
+                # title block and dense spec pages still renders the
+                # title block through the vision model.
                 #
-                # Default behavior is UNCHANGED: COMPANION_SKIP_ENABLED
+                # Default behavior is UNCHANGED: ``COMPANION_SKIP_ENABLED``
                 # defaults to False in Settings, so the generator still
-                # fires on every job. The skip is an operator opt-in.
+                # fires on every page. The skip is an operator opt-in.
                 # ----------------------------------------------------------
                 stage2_start = time.perf_counter()
                 with self._tracer.start_as_current_span(
                     OTEL_SPAN_STAGE2_COMPANION
                 ) as stage2_span:
                     try:
-                        skip_enabled = bool(
-                            getattr(
-                                self._settings,
-                                "COMPANION_SKIP_ENABLED",
-                                False,
-                            )
+                        companion_result = await self._companion_generator.generate(
+                            context, extraction_result
                         )
-                        skip_threshold = int(
-                            getattr(
-                                self._settings,
-                                "COMPANION_SKIP_MIN_WORDS",
-                                0,
-                            )
+                        duration_ms = _elapsed_ms(stage2_start)
+                        pipeline_trace["stages"]["stage2"] = {
+                            "duration_ms": duration_ms,
+                            "ok": True,
+                            "companion_generated": companion_result.companion_generated,
+                            "pages_described": companion_result.pages_described,
+                        }
+                        stage2_span.set_attribute(
+                            "inference.duration_ms", duration_ms
                         )
-
-                        # Compute the word count from the PDF text layer
-                        # the orchestrator already holds. We intentionally
-                        # do NOT reload the PDF — the pdf_processor's
-                        # extract_text() reads from the same bytes that
-                        # were loaded at the top of run_pipeline. On
-                        # extraction failure the count falls back to 0,
-                        # which ensures the skip never fires on a
-                        # best-effort empty text layer (safer to run the
-                        # vision model than to silently drop a page).
-                        word_count = 0
-                        if skip_enabled:
-                            try:
-                                text_layer = self._pdf_processor.extract_text(
-                                    pdf_bytes
-                                )
-                            except Exception:  # noqa: BLE001 - degrade
-                                text_layer = ""
-                            if text_layer:
-                                word_count = len(text_layer.split())
-
-                        if (
-                            skip_enabled
-                            and word_count >= skip_threshold
-                        ):
-                            # Skip the companion_generator call. Record
-                            # the decision as a CHILD event on the Stage 2
-                            # parent span (the parent span is NOT replaced
-                            # — the skip is an annotation, not a new
-                            # stage) and also as a pipeline_trace marker
-                            # so downstream debugging can see the
-                            # decision without reading OTEL.
-                            stage2_span.add_event(
-                                OTEL_SPAN_COMPANION_SKIPPED,
-                                attributes={
-                                    "word_count": int(word_count),
-                                    "threshold": int(skip_threshold),
-                                },
-                            )
-                            duration_ms = _elapsed_ms(stage2_start)
-                            pipeline_trace["stages"]["stage2"] = {
-                                "duration_ms": duration_ms,
-                                "ok": True,
-                                "companion_generated": False,
-                                "pages_described": 0,
-                                "companion_skipped": True,
-                                "skip_word_count": int(word_count),
-                                "skip_threshold": int(skip_threshold),
-                            }
-                            # Also surface the decision as a top-level
-                            # marker so simple ``'companion_skipped' in
-                            # pipeline_trace`` checks work.
-                            pipeline_trace["companion_skipped"] = {
-                                "word_count": int(word_count),
-                                "threshold": int(skip_threshold),
-                            }
-                            stage2_span.set_attribute(
-                                "inference.duration_ms", duration_ms
-                            )
-                            stage2_span.set_attribute(
-                                "companion.generated", False
-                            )
-                            stage2_span.set_attribute(
-                                "companion.pages_described", 0
-                            )
-                            stage2_span.set_attribute(
-                                "companion.skipped", True
-                            )
-                            companion_result = None
-                        else:
-                            companion_result = await self._companion_generator.generate(
-                                context, extraction_result
-                            )
-                            duration_ms = _elapsed_ms(stage2_start)
-                            pipeline_trace["stages"]["stage2"] = {
-                                "duration_ms": duration_ms,
-                                "ok": True,
-                                "companion_generated": companion_result.companion_generated,
-                                "pages_described": companion_result.pages_described,
-                            }
-                            stage2_span.set_attribute(
-                                "inference.duration_ms", duration_ms
-                            )
-                            stage2_span.set_attribute(
-                                "companion.generated",
-                                bool(companion_result.companion_generated),
-                            )
-                            stage2_span.set_attribute(
-                                "companion.pages_described",
-                                int(companion_result.pages_described),
-                            )
+                        stage2_span.set_attribute(
+                            "companion.generated",
+                            bool(companion_result.companion_generated),
+                        )
+                        stage2_span.set_attribute(
+                            "companion.pages_described",
+                            int(companion_result.pages_described),
+                        )
                     except Exception as exc:  # noqa: BLE001 - degrade gracefully
                         self._log.exception(
                             "stage2_failed",

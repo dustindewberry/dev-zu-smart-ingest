@@ -38,7 +38,6 @@ def _isolate_env(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
         "ZUBOT_INGESTION_API_KEY",
         "WOD_JWT_SECRET",
         # Performance knobs — must be stripped so defaults apply
-        "OLLAMA_NUM_PARALLEL",
         "OLLAMA_KEEP_ALIVE",
         "OLLAMA_HTTP_POOL_MAX_CONNECTIONS",
         "OLLAMA_HTTP_POOL_MAX_KEEPALIVE",
@@ -76,7 +75,6 @@ def test_default_settings_preserves_current_behavior() -> None:
     explicitly in its ``.env`` file.
     """
     s = Settings()  # type: ignore[call-arg]
-    assert s.OLLAMA_NUM_PARALLEL == 1
     assert s.CELERY_WORKER_CONCURRENCY == 2
     assert s.COMPANION_SKIP_ENABLED is False
     assert s.OLLAMA_TEXT_MODEL == "qwen2.5:7b"
@@ -86,7 +84,6 @@ def test_default_settings_full_knob_matrix() -> None:
     """Every new performance knob must default to its PERF_* constant."""
     s = Settings()  # type: ignore[call-arg]
     # Ollama runtime
-    assert s.OLLAMA_NUM_PARALLEL == C.PERF_OLLAMA_NUM_PARALLEL
     assert s.OLLAMA_KEEP_ALIVE == C.PERF_OLLAMA_KEEP_ALIVE
     assert s.OLLAMA_KEEP_ALIVE == "5m"
     # Ollama HTTP transport
@@ -138,7 +135,6 @@ def test_default_settings_full_knob_matrix() -> None:
 
 
 def test_env_var_overrides_take_effect(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("OLLAMA_NUM_PARALLEL", "4")
     monkeypatch.setenv("OLLAMA_KEEP_ALIVE", "24h")
     monkeypatch.setenv("OLLAMA_HTTP_POOL_MAX_CONNECTIONS", "64")
     monkeypatch.setenv("OLLAMA_HTTP_POOL_MAX_KEEPALIVE", "32")
@@ -155,7 +151,6 @@ def test_env_var_overrides_take_effect(monkeypatch: pytest.MonkeyPatch) -> None:
 
     s = Settings()  # type: ignore[call-arg]
 
-    assert s.OLLAMA_NUM_PARALLEL == 4
     assert s.OLLAMA_KEEP_ALIVE == "24h"
     assert s.OLLAMA_HTTP_POOL_MAX_CONNECTIONS == 64
     assert s.OLLAMA_HTTP_POOL_MAX_KEEPALIVE == 32
@@ -187,7 +182,6 @@ def test_companion_skip_enabled_false_string_override(
 
 def test_lowercase_property_aliases_mirror_upper_case() -> None:
     s = Settings()  # type: ignore[call-arg]
-    assert s.ollama_num_parallel == s.OLLAMA_NUM_PARALLEL
     assert s.ollama_keep_alive == s.OLLAMA_KEEP_ALIVE
     assert s.ollama_http_pool_max_connections == s.OLLAMA_HTTP_POOL_MAX_CONNECTIONS
     assert s.ollama_http_pool_max_keepalive == s.OLLAMA_HTTP_POOL_MAX_KEEPALIVE
@@ -215,7 +209,6 @@ def test_lowercase_property_aliases_mirror_upper_case() -> None:
 
 _EXPECTED_NEW_CONSTANT_NAMES: tuple[str, ...] = (
     # PERF_* defaults
-    "PERF_OLLAMA_NUM_PARALLEL",
     "PERF_OLLAMA_KEEP_ALIVE",
     "PERF_OLLAMA_VISION_MODEL",
     "PERF_OLLAMA_TEXT_MODEL",
@@ -262,7 +255,6 @@ def test_otel_span_companion_skipped_value() -> None:
 
 
 _EXPECTED_NEW_SETTINGS_FIELDS: tuple[str, ...] = (
-    "OLLAMA_NUM_PARALLEL",
     "OLLAMA_KEEP_ALIVE",
     "OLLAMA_HTTP_POOL_MAX_CONNECTIONS",
     "OLLAMA_HTTP_POOL_MAX_KEEPALIVE",

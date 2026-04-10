@@ -25,7 +25,6 @@ from zubot_ingestion.shared.constants import (
     PERF_OLLAMA_HTTP_POOL_MAX_KEEPALIVE,
     PERF_OLLAMA_HTTP_TIMEOUT_SECONDS,
     PERF_OLLAMA_KEEP_ALIVE,
-    PERF_OLLAMA_NUM_PARALLEL,
     PERF_OLLAMA_RETRY_BACKOFF_MULTIPLIER,
     PERF_OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS,
     PERF_OLLAMA_RETRY_MAX_ATTEMPTS,
@@ -132,8 +131,13 @@ class Settings(BaseSettings):
     # the Ollama client, Celery app, and orchestrator is deferred to
     # downstream tasks that can re-bench after each change.
 
-    # Ollama runtime hints forwarded as ``options`` on /api/chat.
-    OLLAMA_NUM_PARALLEL: int = PERF_OLLAMA_NUM_PARALLEL
+    # Ollama runtime hints. ``OLLAMA_KEEP_ALIVE`` is forwarded as a
+    # top-level field in the /api/generate request body so the Ollama
+    # server holds the model resident between calls. Note: there is
+    # deliberately no ``OLLAMA_NUM_PARALLEL`` Settings field here —
+    # that is an Ollama *server-side* env var (set on the upstream
+    # Ollama container itself), NOT a per-request payload field. A
+    # Python Settings field for it would have zero runtime effect.
     OLLAMA_KEEP_ALIVE: str = PERF_OLLAMA_KEEP_ALIVE
 
     # Ollama HTTP transport — httpx.AsyncClient connection pool sizing.
@@ -192,11 +196,6 @@ class Settings(BaseSettings):
     # access the fields via either the canonical UPPER_CASE name or a  #
     # lowercase alias without having to pick a convention.             #
     # ------------------------------------------------------------------ #
-
-    @property
-    def ollama_num_parallel(self) -> int:
-        """Lowercase alias for :attr:`OLLAMA_NUM_PARALLEL`."""
-        return self.OLLAMA_NUM_PARALLEL
 
     @property
     def ollama_keep_alive(self) -> str:

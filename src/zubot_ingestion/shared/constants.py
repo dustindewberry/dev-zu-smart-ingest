@@ -202,9 +202,12 @@ OTEL_SPAN_COMPANION_SKIPPED: str = "zubot.pipeline.stage2.companion_skipped"
 # CELERY_WORKER_CONCURRENCY, etc.) do so explicitly via environment
 # variables or the .env file.
 
-# Ollama runtime hints — forwarded to the Ollama /api/chat and /api/generate
-# request options when the client is updated in a downstream task.
-PERF_OLLAMA_NUM_PARALLEL: int = 1
+# Ollama runtime hints — forwarded to the Ollama /api/generate request
+# body when the client serializes a request. Note: there is deliberately
+# no ``PERF_OLLAMA_NUM_PARALLEL`` here — ``OLLAMA_NUM_PARALLEL`` is an
+# Ollama *server-side* env var set on the upstream Ollama container,
+# NOT a per-request payload field. A Python-side constant for it would
+# have zero runtime effect on the HTTP client.
 PERF_OLLAMA_KEEP_ALIVE: str = "5m"
 
 # Ollama vision + text model defaults. The text model default is
@@ -360,7 +363,6 @@ __all__ = [
     "OTEL_SPAN_CONFIDENCE",
     "OTEL_SPAN_COMPANION_SKIPPED",
     # Performance tuning defaults
-    "PERF_OLLAMA_NUM_PARALLEL",
     "PERF_OLLAMA_KEEP_ALIVE",
     "PERF_OLLAMA_VISION_MODEL",
     "PERF_OLLAMA_TEXT_MODEL",

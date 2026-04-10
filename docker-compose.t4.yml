@@ -19,8 +19,11 @@
 #     beyond quantization, fits in ~6 GB VRAM).
 #   * Text model drops to qwen2.5:3b so both models co-reside on the T4
 #     with room for a 2-slot parallel request queue and KV cache.
-#   * OLLAMA_NUM_PARALLEL=2 lets the three Stage-1 vision extractors
-#     overlap two-at-a-time instead of serializing.
+#   * OLLAMA_NUM_PARALLEL=2 (set on the upstream Ollama container, NOT
+#     on zubot-ingestion) lets the three Stage-1 vision extractors
+#     overlap two-at-a-time instead of serializing. This is a
+#     server-side Ollama env var and has no effect when set on the
+#     zubot client process itself.
 #   * OLLAMA_KEEP_ALIVE=24h pins both models in VRAM so a quiet period
 #     doesn't trigger a multi-second reload on the next request.
 #   * Celery concurrency doubles from 2 -> 4 so the API can saturate the
@@ -37,7 +40,9 @@ services:
     environment:
       CELERY_WORKER_CONCURRENCY: "4"
       CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
-      OLLAMA_NUM_PARALLEL: "2"
+      # NOTE: OLLAMA_NUM_PARALLEL is intentionally absent here — it is
+      # an Ollama server-side env var that must be set on the upstream
+      # Ollama container, not on this client process.
       OLLAMA_KEEP_ALIVE: "24h"
       OLLAMA_TEXT_MODEL: "qwen2.5:3b"
       OLLAMA_VISION_MODEL: "qwen2.5vl:7b"
@@ -50,7 +55,9 @@ services:
     environment:
       CELERY_WORKER_CONCURRENCY: "4"
       CELERY_WORKER_PREFETCH_MULTIPLIER: "1"
-      OLLAMA_NUM_PARALLEL: "2"
+      # NOTE: OLLAMA_NUM_PARALLEL is intentionally absent here — it is
+      # an Ollama server-side env var that must be set on the upstream
+      # Ollama container, not on this client process.
       OLLAMA_KEEP_ALIVE: "24h"
       OLLAMA_TEXT_MODEL: "qwen2.5:3b"
       OLLAMA_VISION_MODEL: "qwen2.5vl:7b"

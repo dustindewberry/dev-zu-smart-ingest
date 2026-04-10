@@ -56,7 +56,6 @@ from zubot_ingestion.services.orchestrator import ExtractionOrchestrator
 from zubot_ingestion.shared.constants import (
     PERF_CELERY_WORKER_CONCURRENCY,
     PERF_COMPANION_SKIP_ENABLED,
-    PERF_OLLAMA_NUM_PARALLEL,
     PERF_OLLAMA_TEXT_MODEL,
 )
 from zubot_ingestion.shared.types import BatchId, FileHash, JobId
@@ -79,13 +78,19 @@ SCRIPTS_DIR = REPO_ROOT / "scripts"
 class StubPDFProcessor:
     """Minimal IPDFProcessor with a tunable text layer.
 
-    ``text_layer`` is returned verbatim from ``extract_text`` so tests
-    can drive the companion-skip heuristic deterministically.
+    ``text_layer`` is returned verbatim from ``extract_text`` and
+    ``extract_page_text`` so tests can drive the companion-skip
+    heuristic deterministically. The companion-skip production code
+    invokes ``extract_page_text`` (per-page) rather than
+    ``extract_text`` (whole-document), so the stub must expose both
+    methods to exercise the skip path without being silently masked
+    by the try/except fallback in ``CompanionGenerator``.
     """
 
     def __init__(self, *, text_layer: str = "") -> None:
         self._text_layer = text_layer
         self.extract_text_calls = 0
+        self.extract_page_text_calls = 0
 
     def load(self, pdf_bytes: bytes) -> PDFData:
         return PDFData(
@@ -112,6 +117,10 @@ class StubPDFProcessor:
 
     def extract_text(self, pdf_bytes: bytes) -> str:
         self.extract_text_calls += 1
+        return self._text_layer
+
+    def extract_page_text(self, pdf_bytes: bytes, page_number: int) -> str:
+        self.extract_page_text_calls += 1
         return self._text_layer
 
     def render_page(
@@ -370,10 +379,13 @@ def test_defaults_preserve_existing_behavior(
       always run by default.
     * ``CELERY_WORKER_CONCURRENCY == 2`` — matches the old
       docker-compose ``--concurrency=2`` hardcoded flag.
-    * ``OLLAMA_NUM_PARALLEL == 1`` — matches the old /api/generate
-      single-slot behaviour.
     * ``OLLAMA_TEXT_MODEL == 'qwen2.5:7b'`` — the pre-PR default
       (the T4 appliance overlay drops this to ``qwen2.5:3b``).
+
+    Note: there is deliberately no ``OLLAMA_NUM_PARALLEL`` Settings
+    field — it is an Ollama *server-side* env var set on the upstream
+    Ollama container, not a per-request payload field, so a Python
+    Settings field for it would have zero runtime effect.
 
     The test also verifies that ``build_orchestrator()`` under
     default settings returns a fully-wired orchestrator instance,
@@ -390,7 +402,6 @@ def test_defaults_preserve_existing_behavior(
         "COMPANION_SKIP_MIN_WORDS",
         "CELERY_WORKER_CONCURRENCY",
         "CELERY_WORKER_PREFETCH_MULTIPLIER",
-        "OLLAMA_NUM_PARALLEL",
         "OLLAMA_KEEP_ALIVE",
         "OLLAMA_TEXT_MODEL",
         "OLLAMA_VISION_MODEL",
@@ -419,10 +430,6 @@ def test_defaults_preserve_existing_behavior(
         "CELERY_WORKER_CONCURRENCY must default to 2 (matches the "
         "pre-PR docker-compose --concurrency=2 flag)"
     )
-    assert settings.OLLAMA_NUM_PARALLEL == 1, (
-        "OLLAMA_NUM_PARALLEL must default to 1 so single-slot Ollama "
-        "deployments are unaffected"
-    )
     assert settings.OLLAMA_TEXT_MODEL == "qwen2.5:7b", (
         "OLLAMA_TEXT_MODEL must default to 'qwen2.5:7b' so deployments "
         "that have not downloaded the 3B variant keep working"
@@ -433,7 +440,6 @@ def test_defaults_preserve_existing_behavior(
     # been changed in isolation — most likely a bug.
     assert settings.COMPANION_SKIP_ENABLED is PERF_COMPANION_SKIP_ENABLED
     assert settings.CELERY_WORKER_CONCURRENCY == PERF_CELERY_WORKER_CONCURRENCY
-    assert settings.OLLAMA_NUM_PARALLEL == PERF_OLLAMA_NUM_PARALLEL
     assert settings.OLLAMA_TEXT_MODEL == PERF_OLLAMA_TEXT_MODEL
 
     # build_orchestrator() under defaults must still return a fully
@@ -460,17 +466,19 @@ def test_t4_overlay_env_vars_take_effect(
     """Monkeypatch every env var from docker-compose.t4.yml.
 
     The T4 appliance overlay in ``docker-compose.t4.yml`` declares
-    exactly ten unique environment variables (each repeated under
+    exactly nine unique environment variables (each repeated under
     both ``zubot-ingestion`` and ``zubot-ingestion-worker`` service
-    blocks, but they are the same key/value pairs). The task spec
-    refers to '14 env vars' because it conflates unique keys with
-    total lines; the ten unique keys below are the complete set.
+    blocks, but they are the same key/value pairs). Note that
+    ``OLLAMA_NUM_PARALLEL`` is deliberately NOT in this set — it is
+    an Ollama server-side env var that must be configured on the
+    upstream Ollama container rather than on this client process,
+    and therefore is not bound to a Settings field.
 
     Every key must flow through ``Settings`` so the operator can
     drive the appliance behaviour entirely from the overlay file
     without code changes.
     """
-    # These are the ten unique T4 overlay keys. Each pair is
+    # These are the nine unique T4 overlay keys. Each pair is
     # (env_var_name, overlay_value, expected_settings_attr_name,
     #  expected_python_value_after_parsing).
     overlay: list[tuple[str, str, str, Any]] = [
@@ -481,7 +489,6 @@ def test_t4_overlay_env_vars_take_effect(
             "CELERY_WORKER_PREFETCH_MULTIPLIER",
             1,
         ),
-        ("OLLAMA_NUM_PARALLEL", "2", "OLLAMA_NUM_PARALLEL", 2),
         ("OLLAMA_KEEP_ALIVE", "24h", "OLLAMA_KEEP_ALIVE", "24h"),
         ("OLLAMA_TEXT_MODEL", "qwen2.5:3b", "OLLAMA_TEXT_MODEL", "qwen2.5:3b"),
         (
@@ -664,22 +671,87 @@ def test_ollama_client_pool_limits_from_settings(
 
 @pytest.mark.asyncio
 async def test_companion_skip_integration_with_orchestrator() -> None:
-    """Full orchestrator skip integration — flag + threshold + trace.
+    """Full orchestrator skip integration — flag + threshold + per-page path.
 
-    Constructs an ExtractionOrchestrator with COMPANION_SKIP_ENABLED=True
-    and COMPANION_SKIP_MIN_WORDS=5, feeds a fake PDF whose text layer
-    has 100 words, and asserts:
+    The per-page companion-skip heuristic lives inside the production
+    :class:`zubot_ingestion.domain.pipeline.companion.CompanionGenerator`,
+    not at the orchestrator level. To exercise it end-to-end this
+    test constructs the REAL ``CompanionGenerator`` (with stub Ollama
+    and response-parser collaborators that would error if invoked) and
+    pins the orchestrator-level wiring with COMPANION_SKIP_ENABLED=True
+    and COMPANION_SKIP_MIN_WORDS=5.
 
-    * the companion generator stub was NOT called
-    * ``'companion_skipped'`` appears in ``pipeline_trace``
+    The ``StubPDFProcessor.extract_page_text`` returns a 100-word text
+    layer for every page, so for every rendered page the per-page skip
+    fires before the vision call. The test asserts:
 
-    This is the integration-level cousin of the per-unit test in
-    test_companion_skip_heuristic.py — it validates the wiring
-    ``Settings -> orchestrator._settings -> Stage 2 branch`` end-to-end.
+    * The PDF processor's ``extract_page_text`` was invoked at least
+      once (the per-page skip path was reached).
+    * The Ollama vision client was NEVER invoked (every page was
+      skipped, so no inference happened).
+    * The resulting ``CompanionResult`` reports
+      ``companion_generated=False`` and ``pages_described=0`` because
+      every page was skipped.
     """
-    # 100 words — well above the threshold of 5, so the skip fires.
+    from zubot_ingestion.domain.entities import OllamaResponse
+    from zubot_ingestion.domain.pipeline.companion import CompanionGenerator
+
+    # 100 words on every page — well above the threshold of 5, so the
+    # per-page skip fires for every page.
     pdf = StubPDFProcessor(text_layer=" ".join(["word"] * 100))
-    generator = StubCompanionGenerator()
+
+    class StubOllamaClient:
+        """Vision/text Ollama client that fails if anyone calls it.
+
+        Every per-page skip should short-circuit BEFORE this client is
+        invoked, so any call here is a regression in the skip path.
+        """
+
+        def __init__(self) -> None:
+            self.vision_calls = 0
+            self.text_calls = 0
+
+        async def generate_vision(
+            self,
+            image_base64: str,
+            prompt: str,
+            model: str = "qwen2.5vl:7b",
+            temperature: float = 0.0,
+            timeout_seconds: float = 60.0,
+        ) -> OllamaResponse:
+            self.vision_calls += 1
+            raise AssertionError(
+                "generate_vision must NOT be called when every page "
+                "is above COMPANION_SKIP_MIN_WORDS"
+            )
+
+        async def generate_text(
+            self,
+            text: str,
+            prompt: str,
+            model: str = "qwen2.5:7b",
+            temperature: float = 0.0,
+            timeout_seconds: float = 30.0,
+        ) -> OllamaResponse:
+            self.text_calls += 1
+            raise AssertionError(
+                "generate_text must NOT be called from CompanionGenerator"
+            )
+
+        async def check_model_available(self, model: str) -> bool:
+            return True
+
+    class StubResponseParser:
+        """Response parser that should never be reached when skip fires."""
+
+        def parse(self, raw_response: str, expected_schema: Any) -> Any:
+            raise AssertionError(
+                "ResponseParser.parse must NOT be called when every "
+                "page is skipped before the vision call"
+            )
+
+    ollama = StubOllamaClient()
+    parser = StubResponseParser()
 
     # Build a Settings instance with the skip knobs flipped on.
     base = Settings()  # type: ignore[call-arg]
@@ -690,6 +762,13 @@ async def test_companion_skip_integration_with_orchestrator() -> None:
         }
     )
 
+    real_generator = CompanionGenerator(
+        pdf_processor=pdf,
+        ollama_client=ollama,  # type: ignore[arg-type]
+        response_parser=parser,  # type: ignore[arg-type]
+        settings=settings,
+    )
+
     orchestrator = ExtractionOrchestrator(
         drawing_number_extractor=StubExtractor("drawing_number", "X-001", 0.9),
         title_extractor=StubExtractor("title", "Test Title", 0.9),
@@ -697,7 +776,7 @@ async def test_companion_skip_integration_with_orchestrator() -> None:
         sidecar_builder=StubSidecarBuilder(),
         confidence_calculator=StubConfidenceCalculator(),
         pdf_processor=pdf,
-        companion_generator=generator,
+        companion_generator=real_generator,
         metadata_writer=StubMetadataWriter(),
         settings=settings,
     )
@@ -707,21 +786,32 @@ async def test_companion_skip_integration_with_orchestrator() -> None:
         b"%PDF-1.4 fake",
     )
 
-    # Primary assertions from the task spec.
-    assert generator.calls == 0, (
-        "companion_generator must NOT be invoked when "
-        "COMPANION_SKIP_ENABLED=True and word_count (100) >= "
-        "COMPANION_SKIP_MIN_WORDS (5)"
+    # Primary assertions: the per-page skip path was actually exercised
+    # (extract_page_text was called) AND no vision inference happened
+    # (every page short-circuited before the Ollama call).
+    assert pdf.extract_page_text_calls > 0, (
+        "extract_page_text must be invoked when the per-page "
+        "companion-skip heuristic is enabled — without this call the "
+        "skip path is silently bypassed"
     )
-    assert "companion_skipped" in result.pipeline_trace, (
-        "pipeline_trace must contain a 'companion_skipped' marker "
-        "when the Stage 2 skip fires"
+    assert ollama.vision_calls == 0, (
+        "generate_vision must NOT be invoked when every page is above "
+        "COMPANION_SKIP_MIN_WORDS — the per-page skip should short-circuit"
     )
 
-    # Belt-and-suspenders: the marker payload records the decision.
-    marker = result.pipeline_trace["companion_skipped"]
-    assert marker["word_count"] == 100
-    assert marker["threshold"] == 5
+    # The orchestrator's pipeline_trace records the Stage 2 outcome.
+    # When every page is skipped the generator returns
+    # companion_generated=False, pages_described=0.
+    stage2 = result.pipeline_trace["stages"]["stage2"]
+    assert stage2["ok"] is True
+    assert stage2["companion_generated"] is False, (
+        "When every page is skipped the generator must return "
+        "companion_generated=False"
+    )
+    assert stage2["pages_described"] == 0, (
+        "pages_described must be 0 when the per-page skip fires for "
+        "every rendered page"
+    )
 
 
 # ---------------------------------------------------------------------------

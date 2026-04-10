@@ -23,7 +23,6 @@ JSON report schema (see ``docs/PERFORMANCE.md`` for prose docs)::
       "timestamp": "2026-04-09T12:34:56+00:00",
       "git_sha": "abc123..." | "unknown",
       "settings": {
-        "OLLAMA_NUM_PARALLEL": int | null,
         "OLLAMA_TEXT_MODEL": str | null,
         "OLLAMA_VISION_MODEL": str | null,
         "CELERY_WORKER_CONCURRENCY": int | null,
@@ -274,7 +273,6 @@ def snapshot_settings() -> dict[str, Any]:
         settings = get_settings()
     except Exception:  # noqa: BLE001 - tolerate any import-time error
         return {
-            "OLLAMA_NUM_PARALLEL": None,
             "OLLAMA_TEXT_MODEL": None,
             "OLLAMA_VISION_MODEL": None,
             "CELERY_WORKER_CONCURRENCY": None,
@@ -283,7 +281,6 @@ def snapshot_settings() -> dict[str, Any]:
         }
 
     return {
-        "OLLAMA_NUM_PARALLEL": getattr(settings, "OLLAMA_NUM_PARALLEL", None),
         "OLLAMA_TEXT_MODEL": getattr(settings, "OLLAMA_TEXT_MODEL", None),
         "OLLAMA_VISION_MODEL": getattr(settings, "OLLAMA_VISION_MODEL", None),
         "CELERY_WORKER_CONCURRENCY": getattr(
