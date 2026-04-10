@@ -12,7 +12,7 @@ The repo ships a multi-stage `Dockerfile` and a standalone
 | Service                  | Purpose                                | Host port |
 |--------------------------|----------------------------------------|-----------|
 | `zubot-ingestion`        | FastAPI API (uvicorn, `--factory`)     | `4243`    |
-| `zubot-ingestion-worker` | Celery worker (`--concurrency=2`)      | —         |
+| `zubot-ingestion-worker` | Celery worker (env-driven `CELERY_WORKER_CONCURRENCY`) | — |
 | `postgres`               | Postgres 15 — job + batch metadata     | `5433`    |
 
 The Postgres host port is intentionally `5433` to avoid colliding with
@@ -236,7 +236,7 @@ up when hardware improves.
 | `OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS` | `1.0` | `float` | Backoff delay before the first retry. Subsequent retries multiply this by `OLLAMA_RETRY_BACKOFF_MULTIPLIER`. |
 | `OLLAMA_RETRY_BACKOFF_MULTIPLIER` | `2.0` | `float` | Exponential backoff multiplier applied between retry attempts. |
 | `OLLAMA_VISION_MODEL` | `qwen2.5vl:7b` | `str` | Ollama model tag used for all Stage 1 / Stage 2 vision calls. |
-| `OLLAMA_TEXT_MODEL` | `qwen2.5:3b` | `str` | Ollama model tag used for text-only extraction. See the regression-check ladder below before changing. |
+| `OLLAMA_TEXT_MODEL` | `qwen2.5:7b` | `str` | Ollama model tag used for text-only extraction. Service default preserves the pre-tuning 7B model; the T4 appliance overlay (`docker-compose.t4.yml`) downgrades this to `qwen2.5:3b` so both models fit in 16 GB VRAM. See the regression-check ladder below before changing. |
 | `CELERY_WORKER_CONCURRENCY` | `2` | `int` | Number of Celery worker child processes per container. Primary knob for throughput scale-up. |
 | `CELERY_WORKER_PREFETCH_MULTIPLIER` | `1` | `int` | Celery prefetch multiplier. Keep at `1` for long-running inference tasks to avoid head-of-line blocking. |
 | `COMPANION_SKIP_ENABLED` | `false` | `bool` | Feature flag for the Stage 2 companion-page skip heuristic. |

@@ -128,7 +128,7 @@ Each invocation writes a report to
     "OLLAMA_VISION_MODEL": "qwen2.5vl:7b",
     "CELERY_WORKER_CONCURRENCY": 2,
     "COMPANION_SKIP_ENABLED": true,
-    "COMPANION_SKIP_MIN_WORDS": 40
+    "COMPANION_SKIP_MIN_WORDS": 150
   },
   "args": {
     "corpus": "/data/real_drawings",
@@ -205,10 +205,12 @@ JSON report. For operator-facing summaries, the numeric aliases are:
 
 ## Comparing runs
 
-The `scripts/regression_check.py` tool (owned by task-3, expected at
-`scripts/regression_check.py`) is the canonical way to compare two
-bench reports. It diffs p50/p95/p99 and throughput between a baseline
-and a candidate report and fails loudly on regression.
+The `scripts/regression_check.py` tool is the canonical way to compare
+extraction quality across candidate text models. It runs the same
+corpus through the orchestrator once per candidate, diffs the
+structured outputs against a baseline run, and fails loudly when no
+candidate clears the similarity tolerance. See the
+[Regression check](#regression-check) section below for details.
 
 Rules of thumb for manual comparison:
 

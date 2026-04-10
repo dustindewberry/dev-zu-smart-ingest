@@ -27,12 +27,21 @@ stdout. See `docs/PERFORMANCE.md` for a full description of the CLI,
 the environment variables that affect results, and the JSON report
 schema.
 
-### `regression_check.py` — benchmark regression gate
+### `regression_check.py` — text-model regression gate
 
-Compares a baseline bench report against a candidate report and fails
-loudly on a performance regression. Owned by task-3 and expected to
-live at `scripts/regression_check.py`. See that file's module
-docstring for usage once it has landed.
+Runs the same corpus through `ExtractionOrchestrator` once per
+candidate text model in a fallback ladder
+(`qwen2.5:3b` → `llama3.2:3b-instruct` → `phi3.5:3.8b`, with
+CPU-resident `qwen2.5:7b` as a last-resort escalation), diffs the
+structured outputs against a baseline run using
+`difflib.SequenceMatcher.ratio()` on normalized drawing number,
+title, and document type, and declares the first candidate whose
+corpus-mean similarity clears `--tolerance` (default `0.85`) the
+winner. Writes a JSON report to
+`scripts/bench_results/regression_{timestamp}.json` and exits `0`
+on a winner, `1` when every candidate fails, or `2` on usage error.
+See `docs/PERFORMANCE.md` for the full CLI reference, scoring rules,
+and the CPU-fallback operator runbook.
 
 ### `lint-architecture.sh` — import-linter wrapper
 
