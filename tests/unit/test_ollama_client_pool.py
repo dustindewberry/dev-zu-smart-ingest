@@ -54,7 +54,7 @@ def _make_settings(**overrides: Any) -> Settings:
 # ---------------------------------------------------------------------------
 
 
-def test_pool_limits_match_settings_values() -> None:
+async def test_pool_limits_match_settings_values() -> None:
     """``httpx.Limits`` stored on the client mirror the Settings fields."""
     settings = _make_settings(
         OLLAMA_HTTP_POOL_MAX_CONNECTIONS=42,
@@ -74,11 +74,7 @@ def test_pool_limits_match_settings_values() -> None:
         # The shared client must be an httpx.AsyncClient instance.
         assert isinstance(client._http_client, httpx.AsyncClient)
     finally:
-        # Close synchronously via direct aclose-compatible call to
-        # avoid an unclosed pool warning at test teardown.
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(client.close())
+        await client.close()
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +90,7 @@ def test_pool_limits_match_settings_values() -> None:
         (2, 2.0, 1.5),  # scaled-down: 2s, 3s
     ],
 )
-def test_retry_budget_comes_from_settings(
+async def test_retry_budget_comes_from_settings(
     attempts: int, initial: float, multiplier: float
 ) -> None:
     """Patching Settings must propagate into the client's retry knobs."""
@@ -110,9 +106,7 @@ def test_retry_budget_comes_from_settings(
         assert client._retry_initial_backoff == pytest.approx(initial)
         assert client._retry_backoff_multiplier == pytest.approx(multiplier)
     finally:
-        import asyncio
-
-        asyncio.get_event_loop().run_until_complete(client.close())
+        await client.close()
 
 
 # ---------------------------------------------------------------------------
