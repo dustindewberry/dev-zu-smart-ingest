@@ -671,7 +671,7 @@ class IOllamaClient(Protocol):
         self,
         image_base64: str,
         prompt: str,
-        model: str = "qwen2.5vl:7b",
+        model: str | None = None,
         temperature: float = 0.0,
         timeout_seconds: float = 60.0,
     ) -> OllamaResponse:
@@ -680,7 +680,11 @@ class IOllamaClient(Protocol):
         Args:
             image_base64: Base64-encoded JPEG image
             prompt: Instruction prompt for the model
-            model: Vision model name
+            model: Vision model name. ``None`` (the default) means the
+                concrete implementation sources the model from its
+                configured ``Settings`` (e.g. ``OLLAMA_VISION_MODEL``)
+                so operators can swap the model via environment
+                variables without touching call sites.
             temperature: Sampling temperature (0 for deterministic)
             timeout_seconds: Request timeout
 
@@ -697,7 +701,7 @@ class IOllamaClient(Protocol):
         self,
         text: str,
         prompt: str,
-        model: str = "llama3.1:8b",
+        model: str | None = None,
         temperature: float = 0.0,
         timeout_seconds: float = 30.0,
     ) -> OllamaResponse:
@@ -706,7 +710,11 @@ class IOllamaClient(Protocol):
         Args:
             text: Input text content
             prompt: Instruction prompt for the model
-            model: Text model name
+            model: Text model name. ``None`` (the default) means the
+                concrete implementation sources the model from its
+                configured ``Settings`` (e.g. ``OLLAMA_TEXT_MODEL``)
+                so operators can swap the model via environment
+                variables without touching call sites.
             temperature: Sampling temperature
             timeout_seconds: Request timeout
 

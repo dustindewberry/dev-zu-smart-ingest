@@ -223,8 +223,6 @@ _EXPECTED_NEW_CONSTANT_NAMES: tuple[str, ...] = (
     "PERF_COMPANION_SKIP_ENABLED",
     "PERF_COMPANION_SKIP_MIN_WORDS",
     # Canonical names (also referenced by downstream wiring)
-    "OLLAMA_HTTP_POOL_MAX_CONNECTIONS",
-    "OLLAMA_HTTP_POOL_MAX_KEEPALIVE",
     "COMPANION_SKIP_ENABLED",
     "COMPANION_SKIP_MIN_WORDS",
     # OTEL span

@@ -346,8 +346,30 @@ class CompanionGenerator(ICompanionGenerator):
         skip_enabled = False
         skip_min_words = 0
         if self._settings is not None:
-            skip_enabled = bool(getattr(self._settings, "COMPANION_SKIP_ENABLED", False))
-            skip_min_words = int(getattr(self._settings, "COMPANION_SKIP_MIN_WORDS", 0))
+            skip_enabled = bool(self._settings.COMPANION_SKIP_ENABLED)
+            skip_min_words = int(self._settings.COMPANION_SKIP_MIN_WORDS)
+
+        # Pre-fetch every page's text in a single document open when the
+        # heuristic is enabled. The concrete PyMuPDFProcessor exposes a
+        # batch ``extract_page_texts`` method; protocol-level test stubs
+        # without that method fall back to per-call extraction below.
+        # Without this prefetch, each page in the loop would re-parse the
+        # PDF header + xref table from scratch, costing measurable
+        # latency on large drawing sets and partially negating the win
+        # the skip heuristic was designed to deliver.
+        prefetched_texts: dict[int, str] | None = None
+        if skip_enabled and skip_min_words > 0:
+            batch_extractor = getattr(
+                self._pdf_processor, "extract_page_texts", None
+            )
+            if callable(batch_extractor):
+                try:
+                    prefetched_texts = batch_extractor(
+                        context.pdf_bytes,
+                        [r.page_number for r in rendered_pages],
+                    )
+                except Exception:
+                    prefetched_texts = None
 
         visual_descriptions: list[str] = []
         technical_details: list[str] = []
@@ -356,12 +378,15 @@ class CompanionGenerator(ICompanionGenerator):
 
         for rendered in rendered_pages:
             if skip_enabled and skip_min_words > 0:
-                try:
-                    page_text = self._pdf_processor.extract_page_text(
-                        context.pdf_bytes, rendered.page_number
-                    )
-                except Exception:
-                    page_text = ""
+                if prefetched_texts is not None:
+                    page_text = prefetched_texts.get(rendered.page_number, "")
+                else:
+                    try:
+                        page_text = self._pdf_processor.extract_page_text(
+                            context.pdf_bytes, rendered.page_number
+                        )
+                    except Exception:
+                        page_text = ""
                 if page_text and len(page_text.split()) >= skip_min_words:
                     skipped_pages += 1
                     self._log.info(

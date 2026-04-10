@@ -97,7 +97,7 @@ from zubot_ingestion.domain.protocols import (
     ISearchIndexer,
     ISidecarBuilder,
 )
-from zubot_ingestion.config import Settings
+from zubot_ingestion.config import Settings, get_settings
 from zubot_ingestion.infrastructure.metrics.prometheus import (
     confidence_score,
     extraction_duration,
@@ -346,9 +346,11 @@ class ExtractionOrchestrator(IOrchestrator):
         # Performance-tuning settings (task-1). Used by Stage 2 to gate
         # the companion-skip heuristic. A ``None`` default lets legacy
         # test callers keep constructing the orchestrator without
-        # plumbing Settings through; we materialise a fresh
-        # ``Settings()`` instance lazily so env-var defaults still apply.
-        self._settings = settings if settings is not None else Settings()  # type: ignore[call-arg]
+        # plumbing Settings through; we resolve to the cached
+        # ``get_settings()`` singleton lazily so env-var changes between
+        # regression-check fallback-ladder candidates (which call
+        # ``get_settings.cache_clear()``) flow through consistently.
+        self._settings = settings if settings is not None else get_settings()
         self._log = logger or _LOG
         self._tracer = get_tracer()
 

@@ -584,8 +584,11 @@ def test_build_report_includes_required_top_level_keys() -> None:
 
 def test_snapshot_settings_returns_expected_keys() -> None:
     snap = bench.snapshot_settings()
+    # OLLAMA_NUM_PARALLEL is intentionally NOT part of the snapshot —
+    # it's an Ollama server-side env var set on the upstream Ollama
+    # container, not a zubot Settings field. See the docstring in
+    # ``shared/constants.py`` next to ``PERF_OLLAMA_KEEP_ALIVE``.
     assert set(snap.keys()) == {
-        "OLLAMA_NUM_PARALLEL",
         "OLLAMA_TEXT_MODEL",
         "OLLAMA_VISION_MODEL",
         "CELERY_WORKER_CONCURRENCY",

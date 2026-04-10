@@ -156,13 +156,6 @@ class OllamaError(RuntimeError):
 
 _RETRYABLE_STATUS_CODES: frozenset[int] = frozenset({429, 503})
 
-# Pre-refactor backoff schedule retained as a module-level constant so
-# the legacy ``_sleep_for_attempt`` helper (still referenced by one
-# unit test) keeps its original 1s / 2s / 4s shape. The live retry
-# loop now computes the schedule dynamically from Settings via
-# :func:`_compute_backoff`.
-_BACKOFF_SECONDS: tuple[float, ...] = (1.0, 2.0, 4.0)
-
 
 def _compute_backoff(
     attempt_index: int,
@@ -182,25 +175,6 @@ def _compute_backoff(
     if attempt_index < 0:
         return 0.0
     return initial_seconds * (multiplier ** attempt_index)
-
-
-def _sleep_for_attempt(attempt_index: int) -> float:
-    """Legacy fixed-schedule backoff helper (kept for test compatibility).
-
-    Returns the pre-refactor backoff duration (seconds) before retry
-    attempt N, clamped to the last entry of ``_BACKOFF_SECONDS`` for
-    indices beyond the defined schedule. The live retry loop inside
-    :class:`OllamaClient` no longer calls this helper — it now uses
-    :func:`_compute_backoff` with Settings-sourced constants — but
-    the symbol is retained as a public module-level helper so
-    existing unit tests can continue to assert on the canonical
-    1s / 2s / 4s schedule without modification.
-    """
-    if attempt_index < 0:
-        return 0.0
-    if attempt_index >= len(_BACKOFF_SECONDS):
-        return _BACKOFF_SECONDS[-1]
-    return _BACKOFF_SECONDS[attempt_index]
 
 
 # ---------------------------------------------------------------------------

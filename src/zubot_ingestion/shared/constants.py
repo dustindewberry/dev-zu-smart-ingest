@@ -218,13 +218,12 @@ PERF_OLLAMA_VISION_MODEL: str = "qwen2.5vl:7b"
 PERF_OLLAMA_TEXT_MODEL: str = "qwen2.5:7b"
 
 # Ollama HTTP transport — httpx.AsyncClient connection pool sizing. The
-# Ollama client will be refactored in a downstream task to share a single
-# long-lived AsyncClient across requests and cap the pool using these
-# values so a flood of Stage 1 calls cannot open unbounded sockets.
-OLLAMA_HTTP_POOL_MAX_CONNECTIONS: int = 20
-OLLAMA_HTTP_POOL_MAX_KEEPALIVE: int = 10
-PERF_OLLAMA_HTTP_POOL_MAX_CONNECTIONS: int = OLLAMA_HTTP_POOL_MAX_CONNECTIONS
-PERF_OLLAMA_HTTP_POOL_MAX_KEEPALIVE: int = OLLAMA_HTTP_POOL_MAX_KEEPALIVE
+# Ollama client uses a single long-lived AsyncClient sized from these
+# values so a flood of Stage 1 calls cannot open unbounded sockets. The
+# canonical names use the ``PERF_`` prefix; downstream wiring (config.py
+# Settings defaults) consumes them directly.
+PERF_OLLAMA_HTTP_POOL_MAX_CONNECTIONS: int = 20
+PERF_OLLAMA_HTTP_POOL_MAX_KEEPALIVE: int = 10
 PERF_OLLAMA_HTTP_TIMEOUT_SECONDS: float = 120.0
 
 # Ollama retry budget — preserves the current behavior of the existing
@@ -376,8 +375,6 @@ __all__ = [
     "PERF_CELERY_WORKER_PREFETCH_MULTIPLIER",
     "PERF_COMPANION_SKIP_ENABLED",
     "PERF_COMPANION_SKIP_MIN_WORDS",
-    "OLLAMA_HTTP_POOL_MAX_CONNECTIONS",
-    "OLLAMA_HTTP_POOL_MAX_KEEPALIVE",
     "COMPANION_SKIP_ENABLED",
     "COMPANION_SKIP_MIN_WORDS",
     # Prometheus

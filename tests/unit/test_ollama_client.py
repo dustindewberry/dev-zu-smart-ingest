@@ -30,7 +30,7 @@ from zubot_ingestion.infrastructure.ollama.client import (
     OllamaClient,
     OllamaError,
     _coerce_optional_int,
-    _sleep_for_attempt,
+    _compute_backoff,
 )
 from zubot_ingestion.shared.constants import (
     OLLAMA_MODEL_TEXT,
@@ -288,15 +288,32 @@ async def test_transport_error_is_retried_then_wrapped() -> None:
     assert isinstance(excinfo.value.__cause__, httpx.ConnectError)
 
 
-def test_sleep_for_attempt_schedule() -> None:
-    """The documented exponential schedule is 1s / 2s / 4s."""
-    assert _sleep_for_attempt(0) == 1.0
-    assert _sleep_for_attempt(1) == 2.0
-    assert _sleep_for_attempt(2) == 4.0
-    # Out-of-range indices clamp to the last defined value.
-    assert _sleep_for_attempt(99) == 4.0
+def test_compute_backoff_schedule() -> None:
+    """The documented exponential schedule with ``initial=1.0``,
+    ``multiplier=2.0`` is 1s / 2s / 4s."""
+    assert _compute_backoff(0, initial_seconds=1.0, multiplier=2.0) == 1.0
+    assert _compute_backoff(1, initial_seconds=1.0, multiplier=2.0) == 2.0
+    assert _compute_backoff(2, initial_seconds=1.0, multiplier=2.0) == 4.0
+    # Higher indices continue the exponential growth (no clamp).
+    assert _compute_backoff(3, initial_seconds=1.0, multiplier=2.0) == 8.0
     # Negative indices clamp to zero.
-    assert _sleep_for_attempt(-1) == 0.0
+    assert _compute_backoff(-1, initial_seconds=1.0, multiplier=2.0) == 0.0
+
+
+def test_compute_backoff_honors_custom_initial_and_multiplier() -> None:
+    """Operators can tune backoff via Settings; verify the formula
+    honors ``initial_seconds`` and ``multiplier`` directly."""
+    # Halved initial, same multiplier: 0.5s / 1s / 2s / 4s.
+    assert _compute_backoff(0, initial_seconds=0.5, multiplier=2.0) == 0.5
+    assert _compute_backoff(1, initial_seconds=0.5, multiplier=2.0) == 1.0
+    assert _compute_backoff(2, initial_seconds=0.5, multiplier=2.0) == 2.0
+    # Linear multiplier: 1s / 1s / 1s.
+    assert _compute_backoff(0, initial_seconds=1.0, multiplier=1.0) == 1.0
+    assert _compute_backoff(5, initial_seconds=1.0, multiplier=1.0) == 1.0
+    # Tripled multiplier: 1s / 3s / 9s.
+    assert _compute_backoff(0, initial_seconds=1.0, multiplier=3.0) == 1.0
+    assert _compute_backoff(1, initial_seconds=1.0, multiplier=3.0) == 3.0
+    assert _compute_backoff(2, initial_seconds=1.0, multiplier=3.0) == 9.0
 
 
 # ---------------------------------------------------------------------------

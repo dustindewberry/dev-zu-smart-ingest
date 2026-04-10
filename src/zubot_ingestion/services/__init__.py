@@ -150,6 +150,13 @@ def build_orchestrator() -> "IOrchestrator":
         companion_validator=companion_validator,
         search_indexer=search_indexer,
         callback_client=callback_client,
+        # Pass the cached Settings instance through explicitly so the
+        # orchestrator never falls back to constructing its own. This
+        # keeps env-var changes (e.g. regression-check ladder candidates
+        # that call ``get_settings.cache_clear()``) propagating through
+        # the entire wired pipeline rather than only the parts that read
+        # ``settings`` directly here.
+        settings=settings,
     )
 
 

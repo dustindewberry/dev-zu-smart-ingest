@@ -250,6 +250,10 @@ class PyMuPDFProcessor:
         Returns an empty string if the page has no text layer or if text
         extraction fails. Unlike :meth:`extract_text`, this method returns
         ONLY the content of the requested page with no separator tokens.
+
+        Performance note: opens and parses ``pdf_bytes`` on every call. If
+        the caller already knows the full set of pages it needs, prefer
+        :meth:`extract_page_texts` which opens the document exactly once.
         """
         with _open_document(pdf_bytes) as doc:
             idx = _resolve_page_index(page_number, doc.page_count)
@@ -258,6 +262,38 @@ class PyMuPDFProcessor:
                 return page.get_text("text") or ""
             except Exception:
                 return ""
+
+    # -- extract_page_texts -----------------------------------------------
+
+    def extract_page_texts(
+        self, pdf_bytes: bytes, page_numbers: list[int]
+    ) -> dict[int, str]:
+        """Batch-extract the text layer for multiple pages.
+
+        Opens ``pdf_bytes`` exactly once and returns a dict mapping each
+        requested page number (preserved as-is, including negative
+        indices) to the extracted text for that page. This avoids the
+        per-call ``fitz.open(stream=...)`` re-parse cost that
+        :meth:`extract_page_text` incurs when called in a loop.
+
+        Pages whose text extraction raises are recorded as empty strings
+        rather than propagating the failure, matching the
+        per-page method's degrade-gracefully contract. An empty
+        ``page_numbers`` list returns an empty dict without opening the
+        document.
+        """
+        if not page_numbers:
+            return {}
+        results: dict[int, str] = {}
+        with _open_document(pdf_bytes) as doc:
+            for pn in page_numbers:
+                try:
+                    idx = _resolve_page_index(pn, doc.page_count)
+                    page = doc.load_page(idx)
+                    results[pn] = page.get_text("text") or ""
+                except Exception:
+                    results[pn] = ""
+        return results
 
     # -- render_page ------------------------------------------------------
 
