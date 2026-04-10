@@ -161,7 +161,11 @@ class Settings(BaseSettings):
     OLLAMA_TEXT_MODEL: str = PERF_OLLAMA_TEXT_MODEL
 
     # Celery worker sizing. Matches the docker-compose defaults of
-    # --concurrency=2 and worker_prefetch_multiplier=1.
+    # --concurrency=2 and worker_prefetch_multiplier=1. These are
+    # applied to the Celery app via ``app.conf.update(...)`` so they
+    # can be scaled at deploy time via environment variables (e.g. a
+    # T4 appliance overlay raising concurrency to 4) without editing
+    # docker-compose command args.
     CELERY_WORKER_CONCURRENCY: int = PERF_CELERY_WORKER_CONCURRENCY
     CELERY_WORKER_PREFETCH_MULTIPLIER: int = PERF_CELERY_WORKER_PREFETCH_MULTIPLIER
 
