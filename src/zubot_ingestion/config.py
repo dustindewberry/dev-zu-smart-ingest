@@ -137,12 +137,16 @@ class Settings(BaseSettings):
     OLLAMA_KEEP_ALIVE: str = PERF_OLLAMA_KEEP_ALIVE
 
     # Ollama HTTP transport — httpx.AsyncClient connection pool sizing.
+    # Bounded httpx.AsyncClient pool limits shared across every Ollama
+    # request the OllamaClient instance issues.
     OLLAMA_HTTP_POOL_MAX_CONNECTIONS: int = PERF_OLLAMA_HTTP_POOL_MAX_CONNECTIONS
     OLLAMA_HTTP_POOL_MAX_KEEPALIVE: int = PERF_OLLAMA_HTTP_POOL_MAX_KEEPALIVE
     OLLAMA_HTTP_TIMEOUT_SECONDS: float = PERF_OLLAMA_HTTP_TIMEOUT_SECONDS
 
     # Ollama retry budget — preserves the current 3 attempts / 1s / 2s /
-    # 4s exponential-backoff behavior.
+    # 4s exponential-backoff behavior. ``OLLAMA_RETRY_MAX_ATTEMPTS`` is
+    # the TOTAL attempt count (1 initial + N-1 retries). Backoff is
+    # exponential: delay(i) = INITIAL_BACKOFF * (MULTIPLIER ** i).
     OLLAMA_RETRY_MAX_ATTEMPTS: int = PERF_OLLAMA_RETRY_MAX_ATTEMPTS
     OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS: float = (
         PERF_OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS
