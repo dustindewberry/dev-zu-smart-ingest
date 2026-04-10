@@ -1,23 +1,38 @@
-"""Unit tests for the Stage-2 companion-skip heuristic (task-6 / perf).
+"""Unit tests for the per-page Stage-2 companion-skip heuristic (task-6 / perf).
 
-Covers the flag-gated heuristic added to
-:class:`zubot_ingestion.services.orchestrator.ExtractionOrchestrator`
-in Stage 2 of :meth:`run_pipeline`. When
-``Settings.COMPANION_SKIP_ENABLED`` is True and the PDF text layer's
-word count meets or exceeds ``Settings.COMPANION_SKIP_MIN_WORDS``, the
-orchestrator skips the vision-model companion call for that job,
-records the decision as an OTEL span event, and marks the pipeline
-trace with a ``companion_skipped`` marker.
+The companion-skip heuristic lives inside
+:class:`zubot_ingestion.domain.pipeline.companion.CompanionGenerator`,
+not at the orchestrator level. The decision is made PER PAGE: for every
+rendered page the generator consults ``IPDFProcessor.extract_page_text``
+and, when ``Settings.COMPANION_SKIP_ENABLED`` is True and that page's
+text-layer word count is at or above
+``Settings.COMPANION_SKIP_MIN_WORDS``, the vision-model call for that
+page is short-circuited. Keeping the decision per-page means a drawing
+set with a sparse title block and dense spec pages still renders the
+title block through the vision model.
 
-Scenarios asserted here:
+These tests exercise the real ``CompanionGenerator`` directly with
+stub collaborators rather than going through the orchestrator, because
+the orchestrator layer is a pass-through for this feature and wrapping
+it adds noise without exercising any new behavior.
 
-(a) flag=False → generator is called regardless of word count
-    (preserves existing behavior — the default)
-(b) flag=True, word_count < threshold → generator IS called
-(c) flag=True, word_count >= threshold → generator is NOT called,
-    pipeline_trace contains ``companion_skipped``, and the OTEL
-    span event ``OTEL_SPAN_COMPANION_SKIPPED`` is recorded on the
-    Stage 2 parent span.
+Scenarios:
+
+(a) ``COMPANION_SKIP_ENABLED=False`` — every rendered page goes to the
+    vision model regardless of word count, and ``extract_page_text``
+    is never consulted (preserves legacy behavior; this is the
+    default).
+(b) ``COMPANION_SKIP_ENABLED=True`` but every page's word count is
+    below the threshold — the vision model is called for every page
+    and ``extract_page_text`` is called once per rendered page to
+    compute the per-page word count.
+(c) ``COMPANION_SKIP_ENABLED=True`` and every page's word count is at
+    or above the threshold — the vision model is never called, every
+    page is skipped, and the final ``CompanionResult`` reports
+    ``companion_generated=False`` / ``pages_described=0``.
+(d) Mixed — some pages exceed the threshold, others do not. The
+    generator skips the dense pages and runs the vision model for
+    the sparse pages.
 """
 
 from __future__ import annotations
@@ -27,98 +42,86 @@ from typing import Any
 from uuid import UUID
 
 import pytest
-from opentelemetry import trace
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
 
 from zubot_ingestion.config import Settings
 from zubot_ingestion.domain.entities import (
-    CompanionResult,
-    ConfidenceAssessment,
     ExtractionResult,
     Job,
+    OllamaResponse,
     PDFData,
     PipelineContext,
-    SidecarDocument,
-    ValidationResult,
+    RenderedPage,
 )
-from zubot_ingestion.domain.enums import ConfidenceTier, JobStatus
-from zubot_ingestion.shared.constants import (
-    OTEL_SPAN_COMPANION_SKIPPED,
-    OTEL_SPAN_STAGE2_COMPANION,
-    SERVICE_NAME,
-    SERVICE_VERSION,
-)
+from zubot_ingestion.domain.enums import JobStatus
+from zubot_ingestion.domain.pipeline.companion import CompanionGenerator
 from zubot_ingestion.shared.types import BatchId, FileHash, JobId
 
 
 # ---------------------------------------------------------------------------
-# In-memory OTEL tracer fixture
-# ---------------------------------------------------------------------------
-
-
-@pytest.fixture
-def memory_exporter() -> InMemorySpanExporter:
-    """Replace the global tracer provider with one that exports to memory.
-
-    Mirrors the pattern already in test_orchestrator_otel.py: we reset
-    the internal Once latch so each test gets a fresh provider. Spans
-    emitted by the orchestrator (via ``get_tracer()`` at __init__ time)
-    land in the in-memory exporter so we can inspect events and
-    attributes.
-    """
-    exporter = InMemorySpanExporter()
-    provider = TracerProvider(
-        resource=Resource.create(
-            {
-                "service.name": SERVICE_NAME,
-                "service.version": SERVICE_VERSION,
-            }
-        )
-    )
-    provider.add_span_processor(SimpleSpanProcessor(exporter))
-
-    from opentelemetry.util._once import Once
-
-    trace._TRACER_PROVIDER_SET_ONCE = Once()  # type: ignore[attr-defined]
-    trace._TRACER_PROVIDER = None  # type: ignore[attr-defined]
-    trace.set_tracer_provider(provider)
-
-    yield exporter
-    exporter.clear()
-
-
-# ---------------------------------------------------------------------------
-# Stub collaborators
+# Stub collaborators for CompanionGenerator
 # ---------------------------------------------------------------------------
 
 
 class StubPDFProcessor:
-    """Minimal :class:`IPDFProcessor` double with a tunable text layer."""
+    """Minimal :class:`IPDFProcessor` double for the per-page skip path.
 
-    def __init__(self, *, text_layer: str = "") -> None:
-        self._text_layer = text_layer
-        self.extract_text_calls = 0
+    ``page_count`` is configurable so tests can drive the generator's
+    page selector (``_select_pages_to_render``) into the 1-page,
+    2-page, or 4+-page branch. ``page_text_map`` lets each test pin
+    the text layer for individual pages independently, so the mixed
+    scenario (d) can dial some pages above the threshold and others
+    below it.
+    """
+
+    def __init__(
+        self,
+        *,
+        page_count: int = 1,
+        page_text_map: dict[int, str] | None = None,
+        default_text: str = "",
+    ) -> None:
+        self._page_count = page_count
+        self._page_text_map = page_text_map or {}
+        self._default_text = default_text
+        self.extract_page_text_calls: list[int] = []
+        self.render_pages_calls = 0
 
     def load(self, pdf_bytes: bytes) -> PDFData:
         return PDFData(
-            page_count=1,
-            file_hash=FileHash("abc123"),
+            page_count=self._page_count,
+            file_hash=FileHash("deadbeef"),
             metadata={},
         )
 
     def extract_text(self, pdf_bytes: bytes) -> str:
-        self.extract_text_calls += 1
-        return self._text_layer
+        # The per-page heuristic never consults this method — it is
+        # only implemented so the stub still satisfies IPDFProcessor
+        # if another code path happens to call it.
+        return self._default_text
 
-    # render_page is declared on IPDFProcessor but the orchestrator
-    # does not invoke it directly in this code path — declaring a
-    # no-op helper keeps the stub forwards-compatible if that ever
-    # changes.
+    def extract_page_text(self, pdf_bytes: bytes, page_number: int) -> str:
+        self.extract_page_text_calls.append(page_number)
+        return self._page_text_map.get(page_number, self._default_text)
+
+    def render_pages(
+        self,
+        pdf_bytes: bytes,
+        page_numbers: list[int],
+    ) -> list[RenderedPage]:
+        self.render_pages_calls += 1
+        return [
+            RenderedPage(
+                page_number=n,
+                jpeg_bytes=b"",
+                base64_jpeg="",
+                width_px=100,
+                height_px=100,
+                dpi=72,
+                render_time_ms=1,
+            )
+            for n in page_numbers
+        ]
+
     def render_page(
         self,
         pdf_bytes: bytes,
@@ -129,100 +132,67 @@ class StubPDFProcessor:
         raise NotImplementedError
 
 
-class StubExtractor:
-    """Populates one field on the merged :class:`ExtractionResult`."""
+class SpyOllamaClient:
+    """Spy Ollama client — records every ``generate_vision`` call.
 
-    def __init__(self, field: str, value: Any, confidence: float) -> None:
-        self._field = field
-        self._value = value
-        self._confidence = confidence
-
-    async def extract(self, context: PipelineContext) -> ExtractionResult:
-        kwargs: dict[str, Any] = {
-            "drawing_number": None,
-            "drawing_number_confidence": 0.0,
-            "title": None,
-            "title_confidence": 0.0,
-            "document_type": None,
-            "document_type_confidence": 0.0,
-        }
-        if self._field == "drawing_number":
-            kwargs["drawing_number"] = self._value
-            kwargs["drawing_number_confidence"] = self._confidence
-        elif self._field == "title":
-            kwargs["title"] = self._value
-            kwargs["title_confidence"] = self._confidence
-        elif self._field == "document_type":
-            kwargs["document_type"] = self._value
-            kwargs["document_type_confidence"] = self._confidence
-        return ExtractionResult(**kwargs)
-
-
-class StubSidecarBuilder:
-    def build(
-        self,
-        extraction_result: ExtractionResult,
-        companion_result: CompanionResult | None,
-        job: Job,
-    ) -> SidecarDocument:
-        return SidecarDocument(
-            metadata_attributes={"source_filename": job.filename},
-            companion_text=(
-                companion_result.companion_text if companion_result else None
-            ),
-            source_filename=job.filename,
-            file_hash=job.file_hash,
-        )
-
-
-class StubConfidenceCalculator:
-    def calculate(
-        self,
-        extraction_result: ExtractionResult,
-        validation_result: ValidationResult | None,
-    ) -> ConfidenceAssessment:
-        return ConfidenceAssessment(
-            overall_confidence=0.9,
-            tier=ConfidenceTier.AUTO,
-            breakdown={},
-            validation_adjustment=0.0,
-        )
-
-
-class StubCompanionGenerator:
-    """Spy double — records every call and returns a canned result."""
+    Returns a canned response so the generator can proceed to the
+    response parser. ``vision_calls`` is the list of page numbers the
+    generator passed to the vision model; tests assert against its
+    length and contents.
+    """
 
     def __init__(self) -> None:
-        self.calls = 0
-        self.last_context: PipelineContext | None = None
-        self.last_extraction_result: ExtractionResult | None = None
+        self.vision_calls: list[str] = []
+        self.text_calls = 0
 
-    async def generate(
+    async def generate_vision(
         self,
-        context: PipelineContext,
-        extraction_result: ExtractionResult,
-    ) -> CompanionResult:
-        self.calls += 1
-        self.last_context = context
-        self.last_extraction_result = extraction_result
-        return CompanionResult(
-            companion_text="# VISUAL DESCRIPTION\nA stubbed companion.",
-            pages_described=1,
-            companion_generated=True,
-            validation_passed=False,
-            quality_score=None,
+        image_base64: str,
+        prompt: str,
+        model: str = "qwen2.5vl:7b",
+        temperature: float = 0.0,
+        timeout_seconds: float = 60.0,
+    ) -> OllamaResponse:
+        # We don't have the page number here (the vision API is
+        # page-agnostic), so we record the call count via list length.
+        self.vision_calls.append(image_base64)
+        return OllamaResponse(
+            response_text='{"visual_description": "a sample page", "technical_details": "some details"}',
+            model=model,
+            prompt_eval_count=None,
+            eval_count=None,
+            total_duration_ns=None,
         )
 
-
-class StubMetadataWriter:
-    async def write_metadata(
+    async def generate_text(
         self,
-        document_id: str,
-        sidecar: SidecarDocument,
-        deployment_id: int | None,
-        node_id: int | None,
-    ) -> bool:
+        text: str,
+        prompt: str,
+        model: str = "qwen2.5:7b",
+        temperature: float = 0.0,
+        timeout_seconds: float = 30.0,
+    ) -> OllamaResponse:
+        self.text_calls += 1
+        raise AssertionError(
+            "generate_text must not be called from CompanionGenerator"
+        )
+
+    async def check_model_available(self, model: str) -> bool:
         return True
+
+
+class StubResponseParser:
+    """Response parser that returns the canned schema-filled dict."""
+
+    async def parse(
+        self,
+        raw_response: str,
+        expected_schema: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "visual_description": "a sample page",
+            "technical_details": "some details",
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -230,18 +200,8 @@ class StubMetadataWriter:
 # ---------------------------------------------------------------------------
 
 
-def _make_settings(
-    *,
-    enabled: bool,
-    threshold: int,
-) -> Settings:
-    """Build a :class:`Settings` instance with the skip flags overridden.
-
-    Constructs a fresh Settings (env-var defaults still apply) and uses
-    ``model_copy`` to override just the two companion-skip fields so
-    test cases can dial the heuristic on/off without touching the rest
-    of the configuration surface.
-    """
+def _make_settings(*, enabled: bool, threshold: int) -> Settings:
+    """Build a :class:`Settings` instance with the skip flags overridden."""
     base = Settings()  # type: ignore[call-arg]
     return base.model_copy(
         update={
@@ -269,39 +229,44 @@ def _make_job() -> Job:
     )
 
 
-def _make_orchestrator(
-    *,
-    settings: Settings,
-    pdf_processor: StubPDFProcessor,
-    companion_generator: StubCompanionGenerator,
-):
-    """Build an ExtractionOrchestrator with the injected settings and spies."""
-    from zubot_ingestion.services.orchestrator import ExtractionOrchestrator
-
-    return ExtractionOrchestrator(
-        drawing_number_extractor=StubExtractor("drawing_number", "X-001", 0.9),
-        title_extractor=StubExtractor("title", "Test Title", 0.9),
-        document_type_extractor=StubExtractor("document_type", None, 0.9),
-        sidecar_builder=StubSidecarBuilder(),
-        confidence_calculator=StubConfidenceCalculator(),
-        pdf_processor=pdf_processor,
-        companion_generator=companion_generator,
-        metadata_writer=StubMetadataWriter(),
-        settings=settings,
+def _make_extraction_result() -> ExtractionResult:
+    return ExtractionResult(
+        drawing_number="X-001",
+        drawing_number_confidence=0.9,
+        title="Test Title",
+        title_confidence=0.9,
+        document_type=None,
+        document_type_confidence=0.0,
     )
 
 
-def _stage2_events(
-    exporter: InMemorySpanExporter,
-) -> list[tuple[str, dict[str, Any]]]:
-    """Return (event_name, attributes) pairs for the Stage 2 span."""
-    events: list[tuple[str, dict[str, Any]]] = []
-    for span in exporter.get_finished_spans():
-        if span.name != OTEL_SPAN_STAGE2_COMPANION:
-            continue
-        for event in span.events:
-            events.append((event.name, dict(event.attributes or {})))
-    return events
+def _make_context(pdf: StubPDFProcessor) -> PipelineContext:
+    """Build a PipelineContext with pdf_data populated via the stub.
+
+    ``extracted_text`` is deliberately left as its default ``None`` so
+    that ``CompanionGenerator._is_text_only`` never short-circuits the
+    generator via its whole-document text-only skip rule — that rule
+    is unrelated to the per-page heuristic this test exercises.
+    """
+    return PipelineContext(
+        job=_make_job(),
+        pdf_bytes=b"%PDF-1.4 fake",
+        pdf_data=pdf.load(b"%PDF-1.4 fake"),
+    )
+
+
+def _make_generator(
+    *,
+    pdf: StubPDFProcessor,
+    ollama: SpyOllamaClient,
+    settings: Settings,
+) -> CompanionGenerator:
+    return CompanionGenerator(
+        pdf_processor=pdf,  # type: ignore[arg-type]
+        ollama_client=ollama,  # type: ignore[arg-type]
+        response_parser=StubResponseParser(),  # type: ignore[arg-type]
+        settings=settings,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -310,182 +275,183 @@ def _stage2_events(
 
 
 @pytest.mark.asyncio
-async def test_flag_disabled_calls_generator_regardless_of_word_count(
-    memory_exporter: InMemorySpanExporter,
-) -> None:
-    """COMPANION_SKIP_ENABLED=False: generator always runs (default)."""
-    # Even a huge text layer must NOT trigger the skip when the flag is off.
-    pdf = StubPDFProcessor(text_layer=" ".join(["word"] * 10_000))
-    generator = StubCompanionGenerator()
-    settings = _make_settings(enabled=False, threshold=100)
+async def test_flag_disabled_calls_vision_model_regardless_of_word_count() -> None:
+    """COMPANION_SKIP_ENABLED=False: vision model runs on every page.
 
-    orchestrator = _make_orchestrator(
-        settings=settings,
-        pdf_processor=pdf,
-        companion_generator=generator,
-    )
-
-    result = await orchestrator.run_pipeline(
-        _make_job(),
-        b"%PDF-1.4 fake",
-    )
-
-    assert generator.calls == 1, (
-        "companion_generator must be invoked exactly once when "
-        "COMPANION_SKIP_ENABLED=False (backwards-compat contract)"
-    )
-    assert "companion_skipped" not in result.pipeline_trace
-    stage2 = result.pipeline_trace["stages"]["stage2"]
-    assert stage2.get("companion_skipped") is not True
-    # When the flag is off we never touch extract_text at all.
-    assert pdf.extract_text_calls == 0
-    # No skip event on the Stage 2 span.
-    events = _stage2_events(memory_exporter)
-    assert all(name != OTEL_SPAN_COMPANION_SKIPPED for name, _ in events)
-
-
-# ---------------------------------------------------------------------------
-# Scenario (b) — flag=True, word_count < threshold → generator still runs
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_flag_enabled_but_below_threshold_calls_generator(
-    memory_exporter: InMemorySpanExporter,
-) -> None:
-    """COMPANION_SKIP_ENABLED=True but sparse page → generator still runs."""
-    # 5 words, threshold 150 — the heuristic should NOT fire.
-    pdf = StubPDFProcessor(text_layer="only five words in here")
-    generator = StubCompanionGenerator()
-    settings = _make_settings(enabled=True, threshold=150)
-
-    orchestrator = _make_orchestrator(
-        settings=settings,
-        pdf_processor=pdf,
-        companion_generator=generator,
-    )
-
-    result = await orchestrator.run_pipeline(
-        _make_job(),
-        b"%PDF-1.4 fake",
-    )
-
-    assert generator.calls == 1, (
-        "companion_generator must still fire when flag=True but the "
-        "word count is below the threshold"
-    )
-    assert "companion_skipped" not in result.pipeline_trace
-    stage2 = result.pipeline_trace["stages"]["stage2"]
-    assert stage2.get("companion_skipped") is not True
-    # extract_text was consulted exactly once to compute the word count.
-    assert pdf.extract_text_calls == 1
-    # No skip event on the Stage 2 span.
-    events = _stage2_events(memory_exporter)
-    assert all(name != OTEL_SPAN_COMPANION_SKIPPED for name, _ in events)
-
-
-# ---------------------------------------------------------------------------
-# Scenario (c) — flag=True, word_count >= threshold → skipped
-# ---------------------------------------------------------------------------
-
-
-@pytest.mark.asyncio
-async def test_flag_enabled_and_above_threshold_skips_generator(
-    memory_exporter: InMemorySpanExporter,
-) -> None:
-    """COMPANION_SKIP_ENABLED=True and dense page → generator SKIPPED.
-
-    Asserts the three required observable effects:
-
-    1. companion_generator is NOT invoked.
-    2. pipeline_trace contains the ``companion_skipped`` marker.
-    3. Stage 2 OTEL span carries the COMPANION_SKIPPED event with
-       ``word_count`` and ``threshold`` attributes.
+    With the flag disabled the generator must NOT consult
+    ``extract_page_text`` at all, and must invoke ``generate_vision``
+    once per rendered page. This is the legacy/default path.
     """
-    # 200 words, threshold 150 → heuristic fires.
-    pdf = StubPDFProcessor(text_layer=" ".join(["word"] * 200))
-    generator = StubCompanionGenerator()
-    settings = _make_settings(enabled=True, threshold=150)
+    # page_count=4 → selector returns [0, 1, -2, -1] → 4 rendered pages.
+    # Even if every page had 10,000 words, the flag=False means the
+    # heuristic is skipped entirely.
+    pdf = StubPDFProcessor(
+        page_count=4,
+        default_text=" ".join(["word"] * 10_000),
+    )
+    ollama = SpyOllamaClient()
+    settings = _make_settings(enabled=False, threshold=100)
+    generator = _make_generator(pdf=pdf, ollama=ollama, settings=settings)
 
-    orchestrator = _make_orchestrator(
-        settings=settings,
-        pdf_processor=pdf,
-        companion_generator=generator,
+    context = _make_context(pdf)
+    result = await generator.generate(context, _make_extraction_result())
+
+    # Vision fired once per rendered page (4 pages selected).
+    assert len(ollama.vision_calls) == 4, (
+        "generate_vision must be invoked for every rendered page when "
+        "COMPANION_SKIP_ENABLED=False (legacy contract)"
     )
 
-    result = await orchestrator.run_pipeline(
-        _make_job(),
-        b"%PDF-1.4 fake",
+    # extract_page_text was never consulted.
+    assert pdf.extract_page_text_calls == [], (
+        "extract_page_text must not be called when the skip flag is off"
     )
 
-    # (1) Generator was NOT invoked.
-    assert generator.calls == 0, (
-        "companion_generator must NOT be invoked when flag=True and "
-        "word_count >= COMPANION_SKIP_MIN_WORDS"
-    )
-
-    # (2) pipeline_trace contains the skip marker.
-    assert "companion_skipped" in result.pipeline_trace, (
-        "pipeline_trace must surface a 'companion_skipped' marker so "
-        "downstream debugging can see the decision"
-    )
-    marker = result.pipeline_trace["companion_skipped"]
-    assert marker["word_count"] == 200
-    assert marker["threshold"] == 150
-
-    # The per-stage trace entry should also record the skip.
-    stage2 = result.pipeline_trace["stages"]["stage2"]
-    assert stage2["companion_skipped"] is True
-    assert stage2["companion_generated"] is False
-    assert stage2["pages_described"] == 0
-    assert stage2["ok"] is True
-
-    # extract_text is called exactly once per pipeline run to compute
-    # the word count.
-    assert pdf.extract_text_calls == 1
-
-    # (3) OTEL span event was recorded on the Stage 2 parent span.
-    events = _stage2_events(memory_exporter)
-    skip_events = [
-        (name, attrs)
-        for name, attrs in events
-        if name == OTEL_SPAN_COMPANION_SKIPPED
-    ]
-    assert len(skip_events) == 1, (
-        f"expected exactly one OTEL_SPAN_COMPANION_SKIPPED event on the "
-        f"Stage 2 parent span, got events={events!r}"
-    )
-    _, attrs = skip_events[0]
-    assert attrs.get("word_count") == 200
-    assert attrs.get("threshold") == 150
+    # Companion text was produced and all 4 pages contributed.
+    assert result.companion_generated is True
+    assert result.pages_described == 4
 
 
 # ---------------------------------------------------------------------------
-# Extra guardrail: the Stage 2 parent span itself is still emitted,
-# confirming the skip is a CHILD event not a replacement for the parent.
+# Scenario (b) — flag=True, all pages below threshold → vision runs
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.asyncio
-async def test_skip_keeps_stage2_parent_span_present(
-    memory_exporter: InMemorySpanExporter,
-) -> None:
-    """The skip path must still emit the Stage 2 parent span."""
-    pdf = StubPDFProcessor(text_layer=" ".join(["word"] * 500))
-    generator = StubCompanionGenerator()
+async def test_flag_enabled_but_below_threshold_calls_vision_model() -> None:
+    """COMPANION_SKIP_ENABLED=True but sparse pages → vision still runs.
+
+    With a threshold of 150 words and each page containing only 5
+    words, the skip should NOT fire on any page and every page must
+    go through the vision model. ``extract_page_text`` is still
+    consulted once per rendered page to compute the word count.
+    """
+    pdf = StubPDFProcessor(
+        page_count=4,
+        default_text="only five words in here",  # 5 words
+    )
+    ollama = SpyOllamaClient()
     settings = _make_settings(enabled=True, threshold=150)
+    generator = _make_generator(pdf=pdf, ollama=ollama, settings=settings)
 
-    orchestrator = _make_orchestrator(
-        settings=settings,
-        pdf_processor=pdf,
-        companion_generator=generator,
+    context = _make_context(pdf)
+    result = await generator.generate(context, _make_extraction_result())
+
+    # Vision fired for every page — no page was skipped.
+    assert len(ollama.vision_calls) == 4, (
+        "generate_vision must fire for every page when all per-page "
+        "word counts are below the threshold"
     )
 
-    await orchestrator.run_pipeline(_make_job(), b"%PDF-1.4 fake")
-
-    spans: list[ReadableSpan] = list(memory_exporter.get_finished_spans())
-    stage2_spans = [s for s in spans if s.name == OTEL_SPAN_STAGE2_COMPANION]
-    assert len(stage2_spans) == 1, (
-        "Stage 2 parent span must still be emitted on the skip path "
-        "(the skip is a child event, not a replacement)"
+    # extract_page_text was consulted once per rendered page.
+    assert len(pdf.extract_page_text_calls) == 4, (
+        "extract_page_text must be called once per rendered page when "
+        "the skip flag is enabled (to compute the per-page word count)"
     )
+
+    assert result.companion_generated is True
+    assert result.pages_described == 4
+
+
+# ---------------------------------------------------------------------------
+# Scenario (c) — flag=True, all pages at/above threshold → all skipped
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flag_enabled_and_above_threshold_skips_vision_model() -> None:
+    """COMPANION_SKIP_ENABLED=True and dense pages → vision never runs.
+
+    With a threshold of 150 words and every page containing 200
+    words, the per-page skip fires for every rendered page. The
+    vision model must never be invoked and the resulting
+    ``CompanionResult`` reports
+    ``companion_generated=False`` / ``pages_described=0`` because
+    every page was skipped.
+    """
+    pdf = StubPDFProcessor(
+        page_count=4,
+        default_text=" ".join(["word"] * 200),  # 200 words
+    )
+    ollama = SpyOllamaClient()
+    settings = _make_settings(enabled=True, threshold=150)
+    generator = _make_generator(pdf=pdf, ollama=ollama, settings=settings)
+
+    context = _make_context(pdf)
+    result = await generator.generate(context, _make_extraction_result())
+
+    # No vision calls — every page short-circuited.
+    assert ollama.vision_calls == [], (
+        "generate_vision must NOT be called when every page is at or "
+        "above COMPANION_SKIP_MIN_WORDS"
+    )
+
+    # extract_page_text was consulted once per rendered page.
+    assert len(pdf.extract_page_text_calls) == 4, (
+        "extract_page_text must be called once per rendered page so "
+        "the heuristic can decide to skip each one"
+    )
+
+    # Every page was skipped → generator returns the "no companion" shape.
+    assert result.companion_generated is False
+    assert result.pages_described == 0
+    assert result.companion_text == ""
+
+
+# ---------------------------------------------------------------------------
+# Scenario (d) — mixed: some pages above, some below threshold
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_flag_enabled_mixed_pages_skips_only_dense_pages() -> None:
+    """COMPANION_SKIP_ENABLED=True, mixed word counts → partial skip.
+
+    Pages 0 and 1 have 5 words each (below threshold → vision runs).
+    Pages -2 and -1 have 200 words each (above threshold → skipped).
+    The vision model must be invoked exactly twice, the result
+    reports ``pages_described=2`` and ``companion_generated=True``.
+
+    This is the architectural reason the heuristic is per-page: a
+    drawing set where the title block is sparse (page 0) but the
+    body pages are dense (specs, notes) must still render the title
+    block through the vision model.
+    """
+    sparse = "only five words in here"  # 5 words
+    dense = " ".join(["word"] * 200)  # 200 words
+    pdf = StubPDFProcessor(
+        page_count=4,
+        # _select_pages_to_render(4) returns [0, 1, -2, -1]. The stub
+        # uses the literal page numbers as keys so the generator can
+        # look up "page -1" directly without normalizing to a positive
+        # index.
+        page_text_map={
+            0: sparse,
+            1: sparse,
+            -2: dense,
+            -1: dense,
+        },
+    )
+    ollama = SpyOllamaClient()
+    settings = _make_settings(enabled=True, threshold=150)
+    generator = _make_generator(pdf=pdf, ollama=ollama, settings=settings)
+
+    context = _make_context(pdf)
+    result = await generator.generate(context, _make_extraction_result())
+
+    # Vision fired exactly twice (for the two sparse pages).
+    assert len(ollama.vision_calls) == 2, (
+        f"expected 2 vision calls (one per sparse page), got "
+        f"{len(ollama.vision_calls)}"
+    )
+
+    # extract_page_text was consulted once per rendered page.
+    assert len(pdf.extract_page_text_calls) == 4, (
+        "extract_page_text must be called once per rendered page even "
+        "when only some pages end up being skipped"
+    )
+
+    # Two pages contributed → companion was generated from the sparse
+    # pages only.
+    assert result.companion_generated is True
+    assert result.pages_described == 2
