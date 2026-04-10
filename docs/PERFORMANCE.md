@@ -11,6 +11,7 @@ Postgres + Redis + Elasticsearch + ChromaDB co-located on one host).
 - [Environment variables that affect results](#environment-variables-that-affect-results)
 - [Interpreting the JSON report](#interpreting-the-json-report)
 - [Comparing runs](#comparing-runs)
+- [Regression check](#regression-check)
 - [Hardware scale-up notes](#hardware-scale-up-notes)
 
 ## Running the benchmark
@@ -215,6 +216,171 @@ Rules of thumb for manual comparison:
 2. Use `--warmup 1` or higher on every run so cold-start latency does not dominate small corpora.
 3. Prefer `--iterations 3` over single-shot runs — a single run has too much noise for useful percentile estimates.
 4. Compare `git_sha` values. A regression between two different SHAs is only meaningful if the env settings are identical.
+
+## Regression check
+
+The benchmark at `scripts/bench.py` answers "how fast is it?". The
+regression check at `scripts/regression_check.py` answers "if I swap
+the text model for something smaller, does the extraction quality
+hold up?". Both matter on the T4 because its 16 GB VRAM cannot hold
+`qwen2.5vl:7b` and `qwen2.5:7b` simultaneously at reasonable
+quantization with room for KV cache and parallel slots — the text
+model has to shrink.
+
+### When to run it
+
+Run the regression check **before** changing `OLLAMA_TEXT_MODEL` in
+production, and re-run it whenever you change the Stage 1 extractor
+prompts. The harness compares structured extraction output
+(`drawing_number`, `title`, `document_type`) against a baseline run
+using the current text model, so it catches prompt-regression
+failures that a pure latency benchmark would miss entirely.
+
+### Fallback ladder
+
+The default candidate order is:
+
+1. `qwen2.5:3b` — primary target. Frees ~3 GB VRAM vs the 7B,
+   enables `OLLAMA_NUM_PARALLEL=2` for the vision model.
+2. `llama3.2:3b-instruct` — alternate small model. Different
+   tokenizer and training corpus, sometimes handles structured-
+   output prompts differently than Qwen.
+3. `phi3.5:3.8b` — last GPU-resident option before CPU fallback.
+4. **CPU fallback**: `qwen2.5:7b` loaded on the CPU instead of the
+   T4. Quality is preserved but Stage 1 text-mode latency roughly
+   5–10× what it is on GPU. Do NOT adopt this silently — it is the
+   operator's explicit escalation path when every 3B-class candidate
+   fails the tolerance check.
+
+The first candidate whose mean similarity clears `--tolerance`
+(default `0.85`) is the winner. The harness stops iterating once it
+finds a winner to conserve Ollama time.
+
+### Basic usage
+
+```bash
+# Default: auto-discover corpus, baseline qwen2.5:7b, full ladder.
+python scripts/regression_check.py
+
+# Stricter tolerance for high-quality corpora.
+python scripts/regression_check.py --tolerance 0.90
+
+# Point at a real corpus and pin the report location.
+python scripts/regression_check.py \
+    --corpus /data/real_drawings \
+    --output /tmp/regression_qwen2.5-3b.json
+
+# Custom fallback ladder (e.g. after adding a new small model).
+python scripts/regression_check.py \
+    --candidates qwen2.5:3b,llama3.2:3b-instruct,phi3.5:3.8b
+
+# Non-default baseline model for comparisons against a prior winner.
+python scripts/regression_check.py --baseline-model qwen2.5:3b
+```
+
+### CLI reference
+
+| Flag | Default | Meaning |
+| --- | --- | --- |
+| `--corpus PATH` | auto-discover (same as `bench.py`) | Directory of PDFs or single PDF file. |
+| `--baseline-model TAG` | `qwen2.5:7b` | Reference text model. The candidate outputs are scored against this model's outputs. |
+| `--candidates CSV` | `qwen2.5:3b,llama3.2:3b-instruct,phi3.5:3.8b` | Comma-separated ladder of candidate models to try in order. |
+| `--cpu-fallback TAG` | `qwen2.5:7b` | Model the report recommends running on CPU if every GPU candidate fails. |
+| `--output PATH` | `scripts/bench_results/regression_{timestamp}.json` | JSON report path. |
+| `--tolerance FLOAT` | `0.85` | Corpus mean similarity threshold. First candidate >= this value wins. |
+
+### How scoring works
+
+For each document the harness compares three fields — `drawing_number`,
+`title`, `document_type` — between the baseline and candidate runs.
+Each field score is a normalized `difflib.SequenceMatcher.ratio()`
+on lower-cased, whitespace-collapsed strings. The per-document score
+is the mean of the three field scores. The candidate's corpus mean
+similarity is the mean of every per-document score. A candidate is
+classified as "pass" when its corpus mean similarity is greater than
+or equal to `--tolerance`.
+
+Two empty values (both `None` or both blank) score `1.0` — this is
+the correct semantic for "the baseline model also returned nothing,
+so the candidate did not regress".
+
+### JSON report shape
+
+```jsonc
+{
+  "schema_version": "1.0",
+  "timestamp": "2026-04-09T12:34:56+00:00",
+  "git_sha": "abc123...",
+  "tolerance": 0.85,
+  "cpu_fallback": "qwen2.5:7b",
+  "baseline": {
+    "model": "qwen2.5:7b",
+    "corpus_size": 30,
+    "mean_latency_seconds": 12.30,
+    "docs": [
+      { "path": "...", "drawing_number": "A-101",
+        "title": "Floor Plan", "document_type": "drawing",
+        "latency_seconds": 11.8, "ok": true, "error": null }
+    ]
+  },
+  "candidates": [
+    {
+      "model": "qwen2.5:3b",
+      "mean_similarity": 0.91,
+      "mean_latency_seconds": 6.20,
+      "latency_delta_pct": -49.6,
+      "passed": true,
+      "per_doc": [
+        {
+          "path": "...",
+          "baseline": {"drawing_number": "...", "title": "...", "document_type": "..."},
+          "candidate": {"drawing_number": "...", "title": "...", "document_type": "..."},
+          "field_scores": {"drawing_number": 1.0, "title": 0.94, "document_type": 1.0},
+          "overall_score": 0.98,
+          "latency_seconds": 6.2
+        }
+      ]
+    }
+  ],
+  "winner": "qwen2.5:3b",
+  "recommendation": "adopt qwen2.5:3b"
+}
+```
+
+### Operator action: CPU fallback
+
+If the report's `winner` is `null` and the `recommendation` says
+"fallback to CPU text-7B", the harness has exhausted every GPU
+candidate. The ladder is designed so this is the final escalation
+step and requires an Ollama reconfiguration that the harness does
+NOT perform automatically:
+
+1. Stop the Ollama process.
+2. Set `OLLAMA_VISION_MODEL=qwen2.5vl:7b` and
+   `OLLAMA_TEXT_MODEL=qwen2.5:7b` in the Ollama environment.
+3. Configure the Ollama runtime so the vision model still runs on
+   the T4 but the text model is pinned to CPU (Ollama's per-model
+   `num_gpu=0` override is the canonical way to do this).
+4. Restart Ollama and re-run the bench harness (`scripts/bench.py`)
+   to measure the new steady-state latency — expect Stage 1
+   text-mode latency to roughly 5–10× what it was on GPU.
+5. Document the new SLA impact in your runbook.
+
+If the CPU fallback is also unacceptable for your workload, the
+remaining option is a hardware upgrade. See the
+[Hardware scale-up notes](#hardware-scale-up-notes) section below.
+
+### Exit codes
+
+| Exit code | Meaning |
+| --- | --- |
+| `0` | At least one candidate passed. The report's `winner` field names it. |
+| `1` | Every candidate failed. The report recommends CPU fallback. |
+| `2` | Usage error — no corpus found, invalid `--tolerance`, empty `--candidates`, etc. |
+
+This makes the harness usable in CI gates: exit `0` means the current
+model ladder is safe to use; exit `1` means an operator must decide
+whether to accept the CPU fallback or invest in hardware.
 
 ## Hardware scale-up notes
 
