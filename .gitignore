@@ -40,3 +40,6 @@ ENV/
 
 # macOS
 .DS_Store
+
+# Benchmark harness output (scripts/bench.py)
+scripts/bench_results/

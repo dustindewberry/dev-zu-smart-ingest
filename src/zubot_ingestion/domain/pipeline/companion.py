@@ -49,7 +49,7 @@ from :mod:`zubot_ingestion.shared`, :mod:`zubot_ingestion.domain.entities`,
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from zubot_ingestion.domain.entities import (
     CompanionResult,
@@ -71,6 +71,9 @@ from zubot_ingestion.shared.constants import (
     TEXT_ONLY_THRESHOLD_CHARS,
     TEXT_ONLY_THRESHOLD_PAGES,
 )
+
+if TYPE_CHECKING:  # pragma: no cover - type-checking only
+    from zubot_ingestion.config import Settings
 
 __all__ = ["CompanionGenerator"]
 
@@ -227,11 +230,13 @@ class CompanionGenerator(ICompanionGenerator):
         ollama_client: IOllamaClient,
         response_parser: IResponseParser,
         *,
+        settings: "Settings | None" = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._pdf_processor = pdf_processor
         self._ollama_client = ollama_client
         self._response_parser = response_parser
+        self._settings = settings
         self._log = logger or _LOG
 
     async def generate(
@@ -330,11 +335,71 @@ class CompanionGenerator(ICompanionGenerator):
         # ------------------------------------------------------------------
         # Per-page vision inference + parsing
         # ------------------------------------------------------------------
+        # Per-page companion-skip heuristic: if COMPANION_SKIP_ENABLED is
+        # set AND a given page already has more than COMPANION_SKIP_MIN_WORDS
+        # words in its extracted text layer, we skip the vision call for
+        # that page on the assumption that it's text-dominant and another
+        # vision call would not add enrichment value. The skip decision is
+        # made PER PAGE, not per document — a 100-page drawing set where
+        # page 0 is a title block and pages 1-99 are dense specs should
+        # still render page 0 through the vision model.
+        skip_enabled = False
+        skip_min_words = 0
+        if self._settings is not None:
+            skip_enabled = bool(self._settings.COMPANION_SKIP_ENABLED)
+            skip_min_words = int(self._settings.COMPANION_SKIP_MIN_WORDS)
+
+        # Pre-fetch every page's text in a single document open when the
+        # heuristic is enabled. The concrete PyMuPDFProcessor exposes a
+        # batch ``extract_page_texts`` method; protocol-level test stubs
+        # without that method fall back to per-call extraction below.
+        # Without this prefetch, each page in the loop would re-parse the
+        # PDF header + xref table from scratch, costing measurable
+        # latency on large drawing sets and partially negating the win
+        # the skip heuristic was designed to deliver.
+        prefetched_texts: dict[int, str] | None = None
+        if skip_enabled and skip_min_words > 0:
+            batch_extractor = getattr(
+                self._pdf_processor, "extract_page_texts", None
+            )
+            if callable(batch_extractor):
+                try:
+                    prefetched_texts = batch_extractor(
+                        context.pdf_bytes,
+                        [r.page_number for r in rendered_pages],
+                    )
+                except Exception:
+                    prefetched_texts = None
+
         visual_descriptions: list[str] = []
         technical_details: list[str] = []
         successful_pages = 0
+        skipped_pages = 0
 
         for rendered in rendered_pages:
+            if skip_enabled and skip_min_words > 0:
+                if prefetched_texts is not None:
+                    page_text = prefetched_texts.get(rendered.page_number, "")
+                else:
+                    try:
+                        page_text = self._pdf_processor.extract_page_text(
+                            context.pdf_bytes, rendered.page_number
+                        )
+                    except Exception:
+                        page_text = ""
+                if page_text and len(page_text.split()) >= skip_min_words:
+                    skipped_pages += 1
+                    self._log.info(
+                        "companion_page_skipped_text_dominant",
+                        extra={
+                            "job_id": str(context.job.job_id),
+                            "page_number": rendered.page_number,
+                            "word_count": len(page_text.split()),
+                            "threshold": skip_min_words,
+                        },
+                    )
+                    continue
+
             visual, technical = await self._describe_one_page(
                 rendered, job_id=str(context.job.job_id)
             )
@@ -414,11 +479,20 @@ class CompanionGenerator(ICompanionGenerator):
         produced an empty dict, etc.) and the page will be silently dropped
         from the combined output.
         """
+        # Source the vision model from Settings when available so operators
+        # can swap the model at deploy time via OLLAMA_VISION_MODEL. Fall
+        # back to the shared-constants default when no Settings instance
+        # was injected (e.g. in unit tests that construct the generator
+        # without a composition root).
+        if self._settings is not None:
+            vision_model = self._settings.OLLAMA_VISION_MODEL
+        else:
+            vision_model = OLLAMA_MODEL_VISION
         try:
             response = await self._ollama_client.generate_vision(
                 image_base64=rendered.base64_jpeg,
                 prompt=COMPANION_DESCRIPTION_PROMPT_V1,
-                model=OLLAMA_MODEL_VISION,
+                model=vision_model,
                 temperature=OLLAMA_TEMPERATURE_DETERMINISTIC,
             )
         except Exception as exc:  # noqa: BLE001 - degrade gracefully

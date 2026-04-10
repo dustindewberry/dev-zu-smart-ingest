@@ -180,6 +180,74 @@ OTEL_SPAN_STAGE2_COMPANION: str = "zubot.extraction.stage2.companion"
 OTEL_SPAN_STAGE3_SIDECAR: str = "zubot.extraction.stage3.sidecar"
 OTEL_SPAN_CONFIDENCE: str = "zubot.confidence.calculate"
 
+# Span emitted when the Stage 2 companion generator is skipped because the
+# page already has sufficient extracted text (COMPANION_SKIP_* heuristic).
+# Downstream task wires the orchestrator to emit this span when the skip
+# heuristic fires. The name is referenced from this module to keep all OTEL
+# span names in a single source of truth.
+OTEL_SPAN_COMPANION_SKIPPED: str = "zubot.pipeline.stage2.companion_skipped"
+
+
+# ---------------------------------------------------------------------------
+# Performance tuning defaults
+# ---------------------------------------------------------------------------
+# These PERF_* constants are the single source of truth for the performance
+# tuning knob defaults exposed by :class:`zubot_ingestion.config.Settings`.
+# The Settings model imports them so that changing a default in one place
+# flows through to both the environment-variable binding and any downstream
+# code that imports the constant directly.
+#
+# All defaults are chosen to PRESERVE CURRENT BEHAVIOR so that this task is
+# a pure additive change — deployments that want to scale up (NUM_PARALLEL,
+# CELERY_WORKER_CONCURRENCY, etc.) do so explicitly via environment
+# variables or the .env file.
+
+# Ollama runtime hints — forwarded to the Ollama /api/generate request
+# body when the client serializes a request. Note: there is deliberately
+# no ``PERF_OLLAMA_NUM_PARALLEL`` here — ``OLLAMA_NUM_PARALLEL`` is an
+# Ollama *server-side* env var set on the upstream Ollama container,
+# NOT a per-request payload field. A Python-side constant for it would
+# have zero runtime effect on the HTTP client.
+PERF_OLLAMA_KEEP_ALIVE: str = "5m"
+
+# Ollama vision + text model defaults. The text model default is
+# intentionally qwen2.5:7b to preserve current behavior; the appliance
+# deployment overrides this to qwen2.5:3b via environment variable so the
+# T4 VRAM budget can host both models simultaneously with num_parallel=2.
+PERF_OLLAMA_VISION_MODEL: str = "qwen2.5vl:7b"
+PERF_OLLAMA_TEXT_MODEL: str = "qwen2.5:7b"
+
+# Ollama HTTP transport — httpx.AsyncClient connection pool sizing. The
+# Ollama client uses a single long-lived AsyncClient sized from these
+# values so a flood of Stage 1 calls cannot open unbounded sockets. The
+# canonical names use the ``PERF_`` prefix; downstream wiring (config.py
+# Settings defaults) consumes them directly.
+PERF_OLLAMA_HTTP_POOL_MAX_CONNECTIONS: int = 20
+PERF_OLLAMA_HTTP_POOL_MAX_KEEPALIVE: int = 10
+PERF_OLLAMA_HTTP_TIMEOUT_SECONDS: float = 120.0
+
+# Ollama retry budget — preserves the current behavior of the existing
+# Ollama client (3 attempts, 1s / 2s / 4s exponential backoff).
+PERF_OLLAMA_RETRY_MAX_ATTEMPTS: int = 3
+PERF_OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS: float = 1.0
+PERF_OLLAMA_RETRY_BACKOFF_MULTIPLIER: float = 2.0
+
+# Celery worker sizing. Current docker-compose uses --concurrency=2 and
+# worker_prefetch_multiplier=1; these defaults preserve that behavior.
+PERF_CELERY_WORKER_CONCURRENCY: int = 2
+PERF_CELERY_WORKER_PREFETCH_MULTIPLIER: int = 1
+
+# Companion-skip heuristic — when enabled, the Stage 2 companion generator
+# is skipped for pages whose extracted text already has more than
+# ``COMPANION_SKIP_MIN_WORDS`` words, on the assumption that the page is
+# text-dominant and another vision call would not add enrichment value.
+# Default is DISABLED to preserve current behavior; the appliance
+# deployment enables it explicitly.
+COMPANION_SKIP_ENABLED: bool = False
+COMPANION_SKIP_MIN_WORDS: int = 150
+PERF_COMPANION_SKIP_ENABLED: bool = COMPANION_SKIP_ENABLED
+PERF_COMPANION_SKIP_MIN_WORDS: int = COMPANION_SKIP_MIN_WORDS
+
 
 # ---------------------------------------------------------------------------
 # Prometheus metric names
@@ -292,6 +360,23 @@ __all__ = [
     "OTEL_SPAN_STAGE2_COMPANION",
     "OTEL_SPAN_STAGE3_SIDECAR",
     "OTEL_SPAN_CONFIDENCE",
+    "OTEL_SPAN_COMPANION_SKIPPED",
+    # Performance tuning defaults
+    "PERF_OLLAMA_KEEP_ALIVE",
+    "PERF_OLLAMA_VISION_MODEL",
+    "PERF_OLLAMA_TEXT_MODEL",
+    "PERF_OLLAMA_HTTP_POOL_MAX_CONNECTIONS",
+    "PERF_OLLAMA_HTTP_POOL_MAX_KEEPALIVE",
+    "PERF_OLLAMA_HTTP_TIMEOUT_SECONDS",
+    "PERF_OLLAMA_RETRY_MAX_ATTEMPTS",
+    "PERF_OLLAMA_RETRY_INITIAL_BACKOFF_SECONDS",
+    "PERF_OLLAMA_RETRY_BACKOFF_MULTIPLIER",
+    "PERF_CELERY_WORKER_CONCURRENCY",
+    "PERF_CELERY_WORKER_PREFETCH_MULTIPLIER",
+    "PERF_COMPANION_SKIP_ENABLED",
+    "PERF_COMPANION_SKIP_MIN_WORDS",
+    "COMPANION_SKIP_ENABLED",
+    "COMPANION_SKIP_MIN_WORDS",
     # Prometheus
     "METRIC_EXTRACTION_TOTAL",
     "METRIC_EXTRACTION_DURATION",

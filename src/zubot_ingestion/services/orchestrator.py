@@ -97,6 +97,7 @@ from zubot_ingestion.domain.protocols import (
     ISearchIndexer,
     ISidecarBuilder,
 )
+from zubot_ingestion.config import Settings, get_settings
 from zubot_ingestion.infrastructure.metrics.prometheus import (
     confidence_score,
     extraction_duration,
@@ -328,6 +329,7 @@ class ExtractionOrchestrator(IOrchestrator):
         companion_validator: ICompanionValidator | None = None,
         search_indexer: ISearchIndexer | None = None,
         callback_client: ICallbackClient | None = None,
+        settings: Settings | None = None,
         logger: logging.Logger | None = None,
     ) -> None:
         self._drawing_number_extractor = drawing_number_extractor
@@ -341,6 +343,14 @@ class ExtractionOrchestrator(IOrchestrator):
         self._companion_validator = companion_validator
         self._search_indexer = search_indexer
         self._callback_client = callback_client
+        # Performance-tuning settings (task-1). Used by Stage 2 to gate
+        # the companion-skip heuristic. A ``None`` default lets legacy
+        # test callers keep constructing the orchestrator without
+        # plumbing Settings through; we resolve to the cached
+        # ``get_settings()`` singleton lazily so env-var changes between
+        # regression-check fallback-ladder candidates (which call
+        # ``get_settings.cache_clear()``) flow through consistently.
+        self._settings = settings if settings is not None else get_settings()
         self._log = logger or _LOG
         self._tracer = get_tracer()
 
@@ -569,6 +579,19 @@ class ExtractionOrchestrator(IOrchestrator):
 
                 # ----------------------------------------------------------
                 # Stage 2 — companion document generation (CAP-017)
+                #
+                # The flag-gated "companion-skip" heuristic lets operators
+                # opt out of the expensive vision call on pages whose
+                # extracted PDF text layer already exceeds a word-count
+                # threshold (``COMPANION_SKIP_MIN_WORDS``). The decision
+                # is made PER PAGE inside :class:`CompanionGenerator`,
+                # not once per document, so a drawing set with a sparse
+                # title block and dense spec pages still renders the
+                # title block through the vision model.
+                #
+                # Default behavior is UNCHANGED: ``COMPANION_SKIP_ENABLED``
+                # defaults to False in Settings, so the generator still
+                # fires on every page. The skip is an operator opt-in.
                 # ----------------------------------------------------------
                 stage2_start = time.perf_counter()
                 with self._tracer.start_as_current_span(

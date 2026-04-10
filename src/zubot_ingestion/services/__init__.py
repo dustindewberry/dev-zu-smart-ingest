@@ -76,27 +76,47 @@ def build_orchestrator() -> "IOrchestrator":
     settings = get_settings()
 
     pdf_processor = PyMuPDFProcessor()
-    ollama_client = OllamaClient(base_url=settings.OLLAMA_HOST)
+    # Pool limits + retry budget flow through the shared Settings
+    # instance constructed above — OllamaClient reads the pool /
+    # timeout / retry fields directly from it so operators can scale
+    # the client via environment variables alone.
+    ollama_client = OllamaClient(
+        base_url=settings.OLLAMA_HOST,
+        settings=settings,
+    )
     response_parser = JsonResponseParser()
     filename_parser = FilenameParser()
+
+    # Source the Ollama model names from Settings so operators can swap
+    # the vision + text models at deploy time via OLLAMA_VISION_MODEL /
+    # OLLAMA_TEXT_MODEL environment variables. The extractors store the
+    # kwargs on self and forward them on every generate_vision /
+    # generate_text call.
+    vision_model = settings.OLLAMA_VISION_MODEL
+    text_model = settings.OLLAMA_TEXT_MODEL
 
     drawing_number_extractor = DrawingNumberExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
         filename_parser=filename_parser,
+        vision_model=vision_model,
+        text_model=text_model,
     )
     title_extractor = TitleExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
         filename_parser=filename_parser,
+        vision_model=vision_model,
+        text_model=text_model,
     )
     document_type_extractor = DocumentTypeExtractor(
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
         filename_parser=filename_parser,
+        text_model=text_model,
     )
 
     sidecar_builder = SidecarBuilder()
@@ -106,6 +126,7 @@ def build_orchestrator() -> "IOrchestrator":
         pdf_processor=pdf_processor,
         ollama_client=ollama_client,
         response_parser=response_parser,
+        settings=settings,
     )
 
     metadata_writer = ChromaDBMetadataWriter(
@@ -129,6 +150,13 @@ def build_orchestrator() -> "IOrchestrator":
         companion_validator=companion_validator,
         search_indexer=search_indexer,
         callback_client=callback_client,
+        # Pass the cached Settings instance through explicitly so the
+        # orchestrator never falls back to constructing its own. This
+        # keeps env-var changes (e.g. regression-check ladder candidates
+        # that call ``get_settings.cache_clear()``) propagating through
+        # the entire wired pipeline rather than only the parts that read
+        # ``settings`` directly here.
+        settings=settings,
     )
 
 
