@@ -847,7 +847,7 @@ Exempt paths (no auth required): `/health`, `/metrics`
 **Example (curl):**
 
 ```bash
-curl -X POST http://localhost:8000/extract \
+curl -X POST http://localhost:4243/extract \
   -H "X-API-Key: your-api-key" \
   -F "files=@drawing_001.pdf" \
   -F "files=@drawing_002.pdf" \
@@ -862,7 +862,7 @@ curl -X POST http://localhost:8000/extract \
 **Path parameter:** `batch_id` (UUID string)
 
 ```bash
-curl http://localhost:8000/batches/550e8400-e29b-41d4-a716-446655440000 \
+curl http://localhost:4243/batches/550e8400-e29b-41d4-a716-446655440000 \
   -H "X-API-Key: your-api-key"
 ```
 
@@ -871,7 +871,7 @@ curl http://localhost:8000/batches/550e8400-e29b-41d4-a716-446655440000 \
 **Path parameter:** `job_id` (UUID string)
 
 ```bash
-curl http://localhost:8000/jobs/6ba7b810-9dad-11d1-80b4-00c04fd430c8 \
+curl http://localhost:4243/jobs/6ba7b810-9dad-11d1-80b4-00c04fd430c8 \
   -H "X-API-Key: your-api-key"
 ```
 
@@ -885,7 +885,7 @@ curl http://localhost:8000/jobs/6ba7b810-9dad-11d1-80b4-00c04fd430c8 \
 | `offset` | int | 0 | Items to skip |
 
 ```bash
-curl "http://localhost:8000/review/pending?limit=20&offset=0" \
+curl "http://localhost:4243/review/pending?limit=20&offset=0" \
   -H "X-API-Key: your-api-key"
 ```
 
@@ -902,7 +902,7 @@ curl "http://localhost:8000/review/pending?limit=20&offset=0" \
 ```
 
 ```bash
-curl -X POST http://localhost:8000/review/6ba7b810-9dad-11d1-80b4-00c04fd430c8/approve \
+curl -X POST http://localhost:4243/review/6ba7b810-9dad-11d1-80b4-00c04fd430c8/approve \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"reviewer_id": "jsmith", "notes": "Looks correct"}'
@@ -921,7 +921,7 @@ curl -X POST http://localhost:8000/review/6ba7b810-9dad-11d1-80b4-00c04fd430c8/a
 ```
 
 ```bash
-curl -X POST http://localhost:8000/review/6ba7b810-9dad-11d1-80b4-00c04fd430c8/reject \
+curl -X POST http://localhost:4243/review/6ba7b810-9dad-11d1-80b4-00c04fd430c8/reject \
   -H "X-API-Key: your-api-key" \
   -H "Content-Type: application/json" \
   -d '{"reviewer_id": "jsmith", "reason": "Wrong drawing number"}'
@@ -932,7 +932,7 @@ curl -X POST http://localhost:8000/review/6ba7b810-9dad-11d1-80b4-00c04fd430c8/r
 No parameters. No authentication required.
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:4243/health
 ```
 
 #### `GET /metrics` — Prometheus Metrics
@@ -941,7 +941,7 @@ No parameters. No authentication required. Returns Prometheus text
 exposition format.
 
 ```bash
-curl http://localhost:8000/metrics
+curl http://localhost:4243/metrics
 ```
 
 ---

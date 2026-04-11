@@ -4,7 +4,7 @@ This guide walks through the primary zubot-ingestion API workflows with `curl`
 examples. For the auto-generated OpenAPI reference, visit `/docs` (Swagger UI) or
 `/redoc` (ReDoc) on a running instance.
 
-**Base URL used in examples:** `http://localhost:8000`
+**Base URL used in examples:** `http://localhost:4243`
 
 ---
 
@@ -34,7 +34,7 @@ Send the key in the `X-API-Key` header. The service compares it against the
 
 ```bash
 curl -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
-     http://localhost:8000/batches/...
+     http://localhost:4243/batches/...
 ```
 
 On success the middleware attaches an `AuthContext` with:
@@ -55,7 +55,7 @@ Send a WOD-issued JWT in the `Authorization` header:
 
 ```bash
 curl -H "Authorization: Bearer $WOD_JWT_TOKEN" \
-     http://localhost:8000/batches/...
+     http://localhost:4243/batches/...
 ```
 
 The token is decoded with the `WOD_JWT_SECRET` environment variable using the
@@ -119,7 +119,7 @@ Submit one or more PDF files for metadata extraction.
 #### curl Example
 
 ```bash
-curl -X POST http://localhost:8000/extract \
+curl -X POST http://localhost:4243/extract \
   -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
   -F "files=@drawing1.pdf" \
   -F "files=@drawing2.pdf" \
@@ -178,7 +178,7 @@ Returns the batch with aggregated progress counters and per-job summaries.
 
 ```bash
 curl -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
-     http://localhost:8000/batches/a1b2c3d4-e5f6-7890-abcd-ef1234567890
+     http://localhost:4243/batches/a1b2c3d4-e5f6-7890-abcd-ef1234567890
 ```
 
 ##### Sample Response — `200 OK`
@@ -238,7 +238,7 @@ pipeline trace, and observability data.
 
 ```bash
 curl -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
-     http://localhost:8000/jobs/11111111-1111-1111-1111-111111111111
+     http://localhost:4243/jobs/11111111-1111-1111-1111-111111111111
 ```
 
 ##### Sample Response — `200 OK`
@@ -363,7 +363,7 @@ Returns a paginated list of jobs awaiting human review.
 
 ```bash
 curl -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
-     "http://localhost:8000/review/pending?limit=20&offset=0"
+     "http://localhost:4243/review/pending?limit=20&offset=0"
 ```
 
 #### Query Parameters
@@ -404,7 +404,7 @@ Transitions a review-tier job to `COMPLETED` and stamps reviewer metadata into
 the result.
 
 ```bash
-curl -X POST http://localhost:8000/review/33333333-3333-3333-3333-333333333333/approve \
+curl -X POST http://localhost:4243/review/33333333-3333-3333-3333-333333333333/approve \
   -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -458,7 +458,7 @@ Rate limit: 50/minute
 Transitions a review-tier job to `FAILED` with a rejection reason.
 
 ```bash
-curl -X POST http://localhost:8000/review/33333333-3333-3333-3333-333333333333/reject \
+curl -X POST http://localhost:4243/review/33333333-3333-3333-3333-333333333333/reject \
   -H "X-API-Key: $ZUBOT_INGESTION_API_KEY" \
   -H "Content-Type: application/json" \
   -d '{
@@ -600,7 +600,7 @@ Exempt from authentication and rate limiting. Returns the aggregated liveness
 status of all external dependencies.
 
 ```bash
-curl http://localhost:8000/health
+curl http://localhost:4243/health
 ```
 
 ### Status Aggregation Rules
