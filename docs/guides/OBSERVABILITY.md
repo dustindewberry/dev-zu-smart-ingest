@@ -167,7 +167,7 @@ scrape_configs:
   - job_name: zubot-ingestion
     scrape_interval: 15s
     static_configs:
-      - targets: ["zubot-ingestion:8000"]
+      - targets: ["zubot-ingestion:4243"]
 ```
 
 ### Example PromQL Queries
